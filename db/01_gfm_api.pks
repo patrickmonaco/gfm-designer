@@ -101,8 +101,43 @@ procedure delete_item (p_id in number);
 /** GET items/:id/lov - values [{d, r}] of a list item (empty array otherwise). */
 procedure get_item_lov (p_id in number);
 
-/** GET components - palette: {components: [...], detailForms: [...]}. */
+/**
+ * GET components - palette and catalogue:
+ * {components: [{..., factory, objSource, itemCount, valueCount}], detailForms: [...]}.
+ */
 procedure list_components;
+
+/** GET components/:id - component with its values (ordered by SEQ). */
+procedure get_component (p_id in number);
+
+/**
+ * POST components - body {lib, notes?, ctype, vtype?, icon?, groupe?, objSource?}.
+ * ctype: CT, CN, NB, DA, LI (values in GFM_LOV), DL (view with columns D, R).
+ */
+procedure create_component (p_body in clob);
+
+/**
+ * PUT components/:id - body: any of the creation attributes.
+ * Factory components (FACTORY = 'Y'): label and type cannot change.
+ * The type of a component used by items cannot change.
+ */
+procedure update_component (p_id in number, p_body in clob);
+
+/** DELETE components/:id - 409 for a factory component or one used by items. */
+procedure delete_component (p_id in number);
+
+/**
+ * PUT components/:id/values - full list of the values of a list component,
+ * in display order: {"values": [{"id"?, "d", "r", "isDefault"}]}.
+ * Values with an id are updated, without id inserted, missing ones deleted.
+ */
+procedure save_values (p_id in number, p_body in clob);
+
+/**
+ * GET components/:id/preview - values as displayed in a generated page
+ * [{d, r}], at most 100; for a dynamic list, the result of its view.
+ */
+procedure preview_component (p_id in number);
 
 end gfm_api;
 /

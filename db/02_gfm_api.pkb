@@ -22,6 +22,8 @@ c_err_business constant pls_integer := -20400;   -- business rule, HTTP 422
 c_err_notfound constant pls_integer := -20404;   -- HTTP 404
 c_err_conflict constant pls_integer := -20409;   -- HTTP 409
 
+c_inline_list  constant varchar2(30) := 'Inline List';   -- GFM_COMP.LIB of inline lists
+
 /** Writes the HTTP status, the JSON content type and the body. */
 procedure emit (p_json in clob, p_status in pls_integer default 200)
 is
@@ -387,7 +389,7 @@ begin
                             'options' value nvl((
                                 select json_arrayagg(
                                          json_object('d' value l.lib_value, 'r' value l.c_value)
-                                         order by l.lib_value returning clob)
+                                         order by l.seq nulls last, l.lib_value returning clob)
                                   from gfm_lov l
                                  where l.comp_id = c.id ), to_clob('[]')) format json
                             returning clob )
@@ -1071,8 +1073,13 @@ begin
                'ctype'    value c.ctype,
                'vtype'    value c.vtype,
                'icon'     value c.icon,
-               'groupe'   value c.groupe,
-               'isInline' value case when c.lib = 'Inline List' then 'Y' else 'N' end
+               'groupe'     value c.groupe,
+               'objSource'  value c.obj_source,
+               'factory'    value nvl(c.factory, 'N'),
+               'isInline'   value case when c.lib = 'Inline List' then 'Y' else 'N' end,
+               'itemCount'  value ( select count(*) from gfm_items i
+                                     where i.comp = c.id and nvl(i.tcomp, 'C') = 'C' ),
+               'valueCount' value ( select count(*) from gfm_lov l where l.comp_id = c.id )
                returning clob )
              order by c.ctype, upper(c.lib) returning clob )
       into l_comps
@@ -1098,6 +1105,376 @@ exception
         rollback;
         handle_error(sqlcode, sqlerrm, dbms_utility.format_error_backtrace);
 end list_components;
+
+-- ---------------------------------------------------------------------
+-- Components and list values
+-- ---------------------------------------------------------------------
+
+
+/** Component document with its values. */
+function component_json (p_id in number)
+return clob
+is
+    l_json clob;
+begin
+    select json_object(
+             'id'         value c.id,
+             'lib'        value c.lib,
+             'notes'      value c.notes,
+             'ctype'      value c.ctype,
+             'vtype'      value c.vtype,
+             'icon'       value c.icon,
+             'groupe'     value c.groupe,
+             'objSource'  value c.obj_source,
+             'factory'    value nvl(c.factory, 'N'),
+             'isInline'   value case when c.lib = c_inline_list then 'Y' else 'N' end,
+             'itemCount'  value ( select count(*) from gfm_items i
+                                   where i.comp = c.id and nvl(i.tcomp, 'C') = 'C' ),
+             'forms'      value nvl((
+                 select json_arrayagg(json_object('id' value f.id, 'lib' value f.lib)
+                                      order by upper(f.lib) returning clob)
+                   from gfm_form f
+                  where f.id in ( select i.form_id from gfm_items i
+                                   where i.comp = c.id and nvl(i.tcomp, 'C') = 'C' )
+                 ), to_clob('[]')) format json,
+             'values'     value nvl((
+                 select json_arrayagg(
+                          json_object(
+                            'id'        value l.id,
+                            'd'         value l.lib_value,
+                            'r'         value l.c_value,
+                            'isDefault' value nvl(l.is_default, 'N') )
+                          order by l.seq nulls last, l.lib_value, l.id returning clob)
+                   from gfm_lov l
+                  where l.comp_id = c.id ), to_clob('[]')) format json
+             returning clob )
+      into l_json
+      from gfm_comp c
+     where c.id = p_id
+       and nvl(c.internal, 'N') = 'N';
+    return l_json;
+exception
+    when no_data_found then
+        fail(c_err_notfound, 'Composant ' || p_id || ' introuvable');
+end component_json;
+
+/**
+ * Checks the source of a dynamic list: existing view or table exposing
+ * columns D (displayed) and R (returned). Returns the validated name.
+ */
+function check_source (p_source in varchar2)
+return varchar2
+is
+    l_name varchar2(200);
+begin
+    if p_source is null then
+        fail(c_err_business, 'Une liste dynamique doit indiquer sa vue source (colonnes D et R)');
+    end if;
+    begin
+        l_name := dbms_assert.sql_object_name(upper(trim(p_source)));
+    exception
+        when others then
+            fail(c_err_business, 'Vue ou table « ' || p_source || ' » introuvable');
+    end;
+    begin
+        execute immediate 'select d, r from ' || l_name || ' where 1 = 0';
+    exception
+        when others then
+            fail(c_err_business, 'La vue « ' || p_source || ' » doit exposer les colonnes D (libellé) et R (valeur)');
+    end;
+    return l_name;
+end check_source;
+
+procedure check_ctype (p_ctype in varchar2, p_vtype in varchar2)
+is
+begin
+    if p_ctype is null or p_ctype not in ('CT', 'CN', 'NB', 'DA', 'LI', 'DL') then
+        fail(c_err_business, 'Type attendu : CT, CN, NB, DA, LI ou DL');
+    end if;
+    if p_vtype is not null
+       and p_vtype not in ('RADIO', 'LIST', 'CHECKBOX', 'NATIVE_SINGLE_CHECKBOX', 'POPUP') then
+        fail(c_err_business, 'Affichage de liste inconnu : ' || p_vtype);
+    end if;
+end check_ctype;
+
+procedure get_component (p_id in number)
+is
+begin
+    emit(component_json(p_id));
+exception
+    when others then
+        rollback;
+        handle_error(sqlcode, sqlerrm, dbms_utility.format_error_backtrace);
+end get_component;
+
+procedure create_component (p_body in clob)
+is
+    o        json_object_t := parse(p_body);
+    l_lib    gfm_comp.lib%type        := trim(j_str(o, 'lib'));
+    l_ctype  gfm_comp.ctype%type      := upper(j_str(o, 'ctype'));
+    l_vtype  gfm_comp.vtype%type      := upper(j_str(o, 'vtype'));
+    l_notes  gfm_comp.notes%type      := j_str(o, 'notes');
+    l_icon   gfm_comp.icon%type       := j_str(o, 'icon');
+    l_groupe gfm_comp.groupe%type     := j_str(o, 'groupe');
+    l_source gfm_comp.obj_source%type := j_str(o, 'objSource');
+    l_id     number;
+begin
+    if l_lib is null then
+        fail(c_err_business, 'Le libellé du composant est obligatoire');
+    end if;
+    if l_lib like '$%' or l_lib = c_inline_list then
+        fail(c_err_business, 'Libellé réservé : ' || l_lib);
+    end if;
+    check_ctype(l_ctype, l_vtype);
+
+    if l_ctype in ('LI', 'DL') then
+        l_vtype := nvl(l_vtype, 'LIST');
+    else
+        l_vtype := null;
+    end if;
+    if l_ctype = 'DL' then
+        l_source := check_source(l_source);
+    else
+        l_source := null;
+    end if;
+
+    insert into gfm_comp (lib, notes, ctype, vtype, icon, groupe, obj_source, internal, factory)
+    values (l_lib, l_notes, l_ctype, l_vtype, l_icon, l_groupe, l_source, 'N', 'N')
+    returning id into l_id;
+
+    commit;
+    emit(component_json(l_id), 201);
+exception
+    when dup_val_on_index then
+        rollback;
+        emit_error(409, 'Un composant porte déjà le libellé « ' || l_lib || ' »');
+    when others then
+        rollback;
+        handle_error(sqlcode, sqlerrm, dbms_utility.format_error_backtrace);
+end create_component;
+
+procedure update_component (p_id in number, p_body in clob)
+is
+    o       json_object_t := parse(p_body);
+    l_row   gfm_comp%rowtype;
+    l_lib   gfm_comp.lib%type;
+    l_ctype gfm_comp.ctype%type;
+    l_used  pls_integer;
+begin
+    begin
+        select * into l_row from gfm_comp
+         where id = p_id and nvl(internal, 'N') = 'N'
+           for update;
+    exception
+        when no_data_found then
+            fail(c_err_notfound, 'Composant ' || p_id || ' introuvable');
+    end;
+
+    l_lib   := nvl(trim(j_str(o, 'lib', l_row.lib)), l_row.lib);
+    l_ctype := upper(nvl(j_str(o, 'ctype', l_row.ctype), l_row.ctype));
+
+    if nvl(l_row.factory, 'N') = 'Y' and (l_lib <> l_row.lib or l_ctype <> l_row.ctype) then
+        fail(c_err_conflict, 'Composant standard : son libellé et son type ne peuvent pas changer');
+    end if;
+    if l_lib <> l_row.lib and (l_lib like '$%' or l_lib = c_inline_list) then
+        fail(c_err_business, 'Libellé réservé : ' || l_lib);
+    end if;
+    if l_ctype <> l_row.ctype then
+        select count(*) into l_used from gfm_items where comp = p_id and nvl(tcomp, 'C') = 'C';
+        if l_used > 0 then
+            fail(c_err_conflict, 'Le type ne peut pas changer : composant utilisé par '
+                                 || l_used || ' champ(s)');
+        end if;
+    end if;
+
+    l_row.lib        := l_lib;
+    l_row.ctype      := l_ctype;
+    l_row.notes      := j_str(o, 'notes',     l_row.notes);
+    l_row.icon       := j_str(o, 'icon',      l_row.icon);
+    l_row.groupe     := j_str(o, 'groupe',    l_row.groupe);
+    l_row.vtype      := upper(j_str(o, 'vtype', l_row.vtype));
+    l_row.obj_source := j_str(o, 'objSource', l_row.obj_source);
+    check_ctype(l_row.ctype, l_row.vtype);
+
+    if l_row.ctype in ('LI', 'DL') then
+        l_row.vtype := nvl(l_row.vtype, 'LIST');
+    else
+        l_row.vtype := null;
+    end if;
+    if l_row.ctype = 'DL' then
+        l_row.obj_source := check_source(l_row.obj_source);
+    else
+        l_row.obj_source := null;
+    end if;
+
+    update gfm_comp
+       set lib        = l_row.lib,
+           notes      = l_row.notes,
+           ctype      = l_row.ctype,
+           vtype      = l_row.vtype,
+           icon       = l_row.icon,
+           groupe     = l_row.groupe,
+           obj_source = l_row.obj_source
+     where id = p_id;
+
+    commit;
+    emit(component_json(p_id));
+exception
+    when dup_val_on_index then
+        rollback;
+        emit_error(409, 'Un composant porte déjà le libellé « ' || l_lib || ' »');
+    when others then
+        rollback;
+        handle_error(sqlcode, sqlerrm, dbms_utility.format_error_backtrace);
+end update_component;
+
+procedure delete_component (p_id in number)
+is
+    l_row  gfm_comp%rowtype;
+    l_used pls_integer;
+begin
+    begin
+        select * into l_row from gfm_comp where id = p_id and nvl(internal, 'N') = 'N';
+    exception
+        when no_data_found then
+            fail(c_err_notfound, 'Composant ' || p_id || ' introuvable');
+    end;
+    if nvl(l_row.factory, 'N') = 'Y' then
+        fail(c_err_conflict, 'Composant standard : il ne peut pas être supprimé');
+    end if;
+
+    select count(*) into l_used from gfm_items where comp = p_id and nvl(tcomp, 'C') = 'C';
+    if l_used > 0 then
+        fail(c_err_conflict, 'Composant utilisé par ' || l_used
+                             || ' champ(s) : supprimez-les ou changez leur composant d''abord');
+    end if;
+
+    delete gfm_comp where id = p_id;          -- cascade: GFM_LOV
+    commit;
+    emit('{"deleted":' || p_id || '}');
+exception
+    when others then
+        rollback;
+        handle_error(sqlcode, sqlerrm, dbms_utility.format_error_backtrace);
+end delete_component;
+
+procedure save_values (p_id in number, p_body in clob)
+is
+    o          json_object_t := parse(p_body);
+    l_values   json_array_t;
+    l_val      json_object_t;
+    l_comp     gfm_comp%rowtype;
+    l_keep     apex_t_number := apex_t_number();
+    l_seen     apex_t_varchar2 := apex_t_varchar2();
+    l_val_id   number;
+    l_d        gfm_lov.lib_value%type;
+    l_r        gfm_lov.c_value%type;
+    l_default  varchar2(1);
+    l_has_def  boolean := false;
+begin
+    begin
+        select * into l_comp from gfm_comp where id = p_id and nvl(internal, 'N') = 'N';
+    exception
+        when no_data_found then
+            fail(c_err_notfound, 'Composant ' || p_id || ' introuvable');
+    end;
+    if l_comp.ctype <> 'LI' or l_comp.lib = c_inline_list then
+        fail(c_err_business, 'Seules les listes statiques ont des valeurs enregistrées');
+    end if;
+    if not o.has('values') then
+        fail(c_err_business, 'Attribut "values" attendu');
+    end if;
+    l_values := o.get_array('values');
+
+    -- 1. validation, ids kept
+    for i in 0 .. l_values.get_size - 1 loop
+        l_val := treat(l_values.get(i) as json_object_t);
+        l_r   := trim(j_str(l_val, 'r'));
+        if l_r is null then
+            fail(c_err_business, 'Valeur ' || (i + 1) || ' : la valeur enregistrée est obligatoire');
+        end if;
+        if l_r member of l_seen then
+            fail(c_err_business, 'Valeur « ' || l_r || ' » en double');
+        end if;
+        apex_string.push(l_seen, l_r);
+        l_val_id := j_num(l_val, 'id');
+        if l_val_id is not null then
+            apex_string.push(l_keep, l_val_id);
+        end if;
+    end loop;
+
+    -- 2. removed values
+    delete gfm_lov
+     where comp_id = p_id
+       and id not in ( select column_value from table(l_keep) );
+
+    -- 3. updates and inserts, in the order received
+    for i in 0 .. l_values.get_size - 1 loop
+        l_val     := treat(l_values.get(i) as json_object_t);
+        l_val_id  := j_num(l_val, 'id');
+        l_r       := trim(j_str(l_val, 'r'));
+        l_d       := nvl(trim(j_str(l_val, 'd')), l_r);
+        l_default := case when j_yn(l_val, 'isDefault') = 'Y' and not l_has_def then 'Y' else 'N' end;
+        l_has_def := l_has_def or l_default = 'Y';
+
+        if l_val_id is not null then
+            update gfm_lov
+               set lib_value  = l_d,
+                   c_value    = l_r,
+                   is_default = l_default,
+                   value_type = 'C',
+                   seq        = (i + 1) * 10
+             where id      = l_val_id
+               and comp_id = p_id;
+            if sql%rowcount = 0 then
+                fail(c_err_business, 'Valeur ' || l_val_id || ' inconnue pour ce composant');
+            end if;
+        else
+            insert into gfm_lov (comp_id, value_type, lib_value, c_value, is_default, seq)
+            values (p_id, 'C', l_d, l_r, l_default, (i + 1) * 10);
+        end if;
+    end loop;
+
+    commit;
+    emit(component_json(p_id));
+exception
+    when others then
+        rollback;
+        handle_error(sqlcode, sqlerrm, dbms_utility.format_error_backtrace);
+end save_values;
+
+procedure preview_component (p_id in number)
+is
+    l_comp gfm_comp%rowtype;
+    l_json clob;
+begin
+    begin
+        select * into l_comp from gfm_comp where id = p_id and nvl(internal, 'N') = 'N';
+    exception
+        when no_data_found then
+            fail(c_err_notfound, 'Composant ' || p_id || ' introuvable');
+    end;
+
+    if l_comp.ctype = 'LI' then
+        select json_arrayagg(json_object('d' value lib_value, 'r' value c_value)
+                             order by seq nulls last, lib_value returning clob)
+          into l_json
+          from gfm_lov
+         where comp_id = p_id;
+    elsif l_comp.ctype = 'DL' then
+        execute immediate
+            'select json_arrayagg(json_object(''d'' value d, ''r'' value r) returning clob) from ('
+            || 'select d, r from ' || check_source(l_comp.obj_source)
+            || ' order by d fetch first 100 rows only)'
+            into l_json;
+    end if;
+
+    emit(nvl(l_json, to_clob('[]')));
+exception
+    when others then
+        rollback;
+        handle_error(sqlcode, sqlerrm, dbms_utility.format_error_backtrace);
+end preview_component;
 
 end gfm_api;
 /

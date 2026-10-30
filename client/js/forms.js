@@ -101,6 +101,7 @@ export async function renderFormsList(root, { openForm }) {
     const load = async () => {
         try {
             forms = await api.forms() || [];
+            if (!grid.isConnected) return;          // the user went to another view
             draw();
         } catch (err) {
             grid.innerHTML = '';

@@ -5,7 +5,10 @@
 --
 -- 1. Role gfm_designer + privilege gfm.designer.priv protecting the whole
 --    module: every call without a valid token gets 401.
--- 2. OAuth2 client "gfm_designer_spa", implicit flow, for the web client:
+-- 2. OAuth2 client "gfm_designer_spa", implicit flow. Recent ORDS releases
+--    disable this flow: the web client then uses gfm_designer_web
+--    (authorization code), created by 05_ords_client_code.sql.
+--    Former description:
 --    the browser is redirected to ORDS, the user signs in, ORDS redirects
 --    back to the client with the token in the URL fragment.
 -- 3. OAuth2 client "gfm_designer_cli", client credentials, for tests

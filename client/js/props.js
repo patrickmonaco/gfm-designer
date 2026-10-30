@@ -2,7 +2,7 @@
 // Every field saves itself on change.
 /* global Sortable */
 import { api } from './api.js';
-import { esc, html, showError } from './ui.js';
+import { esc, html, showError, navigate } from './ui.js';
 import { VTYPES, WIDTHS, PREF_LABELS, isList, itemTypeLabel, itemIcon } from './meta.js';
 
 const field = (id, label, control, help = '') => `
@@ -139,6 +139,9 @@ function itemProps(container, ed, item) {
                     <select class="form-select" id="p-vtype" data-field="vtype">
                         ${Object.entries(VTYPES).map(([k, v]) => `<option value="${k}" ${k === item.vtype ? 'selected' : ''}>${v.label}</option>`).join('')}
                     </select>`) : ''}
+                ${isList(item) && item.isInline !== 'Y' ? `<p class="small mb-3">
+                    <a href="?view=components&comp=${item.compId}" data-act="comp"><i class="bi bi-list-check me-1"></i>Modifier les valeurs de « ${esc(item.compLib)} »</a>
+                    <span class="d-block text-body-secondary">Partagées par tous les champs de ce composant.</span></p>` : ''}
                 ${item.isInline === 'Y' ? `<div class="mb-3 lov-editor">
                     <span class="form-label d-block">Valeurs de la liste</span>
                     <ul class="list-group list-group-sm lov-values"></ul>
@@ -168,6 +171,10 @@ function itemProps(container, ed, item) {
         ed.updateItem(item.id, { [name]: value }, { props });
     });
     container.querySelector('[data-act=delete]').addEventListener('click', () => ed.deleteItem(item.id));
+    container.querySelector('[data-act=comp]')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        navigate(`?view=components&comp=${item.compId}`);
+    });
 
     if (item.isInline === 'Y') inlineValues(container, ed, item);
     if (item.masterId) masterValue(container, ed, item);

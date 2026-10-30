@@ -90,6 +90,12 @@ begin
 
     -- Palette --------------------------------------------------------------
     handler('components',         'GET',    'begin gfm_api.list_components; end;');
+    handler('components',         'POST',   'begin gfm_api.create_component(:body_text); end;');
+    handler('components/:id',     'GET',    'begin gfm_api.get_component(:id); end;');
+    handler('components/:id',     'PUT',    'begin gfm_api.update_component(:id, :body_text); end;');
+    handler('components/:id',     'DELETE', 'begin gfm_api.delete_component(:id); end;');
+    handler('components/:id/values',  'PUT', 'begin gfm_api.save_values(:id, :body_text); end;');
+    handler('components/:id/preview', 'GET', 'begin gfm_api.preview_component(:id); end;');
 
     commit;
 end;

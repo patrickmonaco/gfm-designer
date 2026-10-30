@@ -39,6 +39,16 @@ const comps = [
         lov: [['Tabs', 'TABS_CONTAINER'], ['Display selector', 'DISPLAY_SELECTOR'], ['Standard', 'STANDARD']] },
 ];
 
+// values as in GFM_LOV, in display order (SEQ); factory = standard components
+const FACTORY = new Set(['Yes / No', 'Inline List', 'Date', 'Text Field', 'Text Area', 'Email', 'Number']);
+for (const c of comps) {
+    c.values = (c.lov || []).map(([d, r]) => ({ id: nextId(), d, r, isDefault: 'N' }));
+    delete c.lov;
+    c.factory = FACTORY.has(c.lib) ? 'Y' : 'N';
+    c.objSource = c.ctype === 'DL' ? 'GFM_SITES_V' : null;
+    c.icon = c.icon || null;
+    c.groupe = null;
+}
 const forms = [];
 const sections = [];
 const items = [];
@@ -143,7 +153,7 @@ function formJson(id) {
         }),
         prefs: comps.filter((c) => c.internal === 'Y' && c.lib.startsWith('$')).sort((a, b) => a.lib.localeCompare(b.lib)).map((c) => ({
             pref: c.lib, notes: c.notes, val: prefs.find((p) => p.formId === id && p.pref === c.lib)?.val ?? null,
-            options: (c.lov || []).map(([d, r]) => ({ d, r })),
+            options: c.values.map(({ d, r }) => ({ d, r })),
         })),
     };
 }
@@ -359,15 +369,98 @@ route('GET', '/items/:id/lov', ([id]) => {
     const c = comps.find((x) => x.id === it.compId);
     if (!c || it.tcomp !== 'C') return [200, []];
     if (c.lib === 'Inline List') return [200, (it.lov || '').split(':').filter(Boolean).map((v) => ({ d: v, r: v }))];
-    return [200, (c.lov || []).map(([d, r]) => ({ d, r }))];
+    return [200, c.values.map(({ d, r }) => ({ d, r }))];
 });
+
+const usage = (c) => items.filter((i) => i.tcomp === 'C' && i.compId === c.id);
+const compSummary = (c) => ({ id: c.id, lib: c.lib, notes: c.notes, ctype: c.ctype, vtype: c.vtype || null, icon: c.icon,
+    groupe: c.groupe, objSource: c.objSource, factory: c.factory, isInline: c.lib === 'Inline List' ? 'Y' : 'N',
+    itemCount: usage(c).length, valueCount: c.values.length });
+const compJson = (c) => ({ ...compSummary(c),
+    forms: [...new Set(usage(c).map((i) => i.formId))].map((id) => forms.find((f) => f.id === id)).filter(Boolean)
+        .map((f) => ({ id: f.id, lib: f.lib })),
+    values: c.values.map(({ id, d, r, isDefault }) => ({ id, d, r, isDefault })) });
+const compOf = (id) => { const c = comps.find((x) => x.id === id && x.internal === 'N'); need(c, 404, `Composant ${id} introuvable`); return c; };
+const CTYPE_OK = ['CT', 'CN', 'NB', 'DA', 'LI', 'DL'];
+const VIEWS = { GFM_SITES_V: [['Bordeaux', 'BDX'], ['Lyon', 'LYS'], ['Toulouse', 'TLS']] };   // fake dynamic sources
+const checkSource = (s) => {
+    need(s, 422, 'Une liste dynamique doit indiquer sa vue source (colonnes D et R)');
+    need(VIEWS[s.toUpperCase()], 422, `Vue ou table « ${s} » introuvable`);
+    return s.toUpperCase();
+};
 
 route('GET', '/components', () => [200, {
     components: comps.filter((c) => c.internal === 'N').sort((a, b) => a.ctype.localeCompare(b.ctype) || a.lib.localeCompare(b.lib))
-        .map((c) => ({ id: c.id, lib: c.lib, notes: c.notes, ctype: c.ctype, vtype: c.vtype || null, icon: c.icon || null,
-            groupe: null, isInline: c.lib === 'Inline List' ? 'Y' : 'N' })),
+        .map(compSummary),
     detailForms: forms.filter((f) => f.vtype === 'D').map((f) => ({ id: f.id, lib: f.lib, code: f.code })),
 }]);
+
+route('GET', '/components/:id', ([id]) => [200, compJson(compOf(id))]);
+
+route('POST', '/components', (_, b) => {
+    const lib = (b.lib || '').trim();
+    need(lib, 422, 'Le libellé du composant est obligatoire');
+    need(!lib.startsWith('$') && lib !== 'Inline List', 422, `Libellé réservé : ${lib}`);
+    need(CTYPE_OK.includes(b.ctype), 422, 'Type attendu : CT, CN, NB, DA, LI ou DL');
+    need(!comps.some((c) => c.lib === lib), 409, `Un composant porte déjà le libellé « ${lib} »`);
+    const list = b.ctype === 'LI' || b.ctype === 'DL';
+    const c = { id: nextId(), lib, notes: b.notes || null, ctype: b.ctype, vtype: list ? b.vtype || 'LIST' : null, icon: b.icon || null,
+        groupe: null, internal: 'N', factory: 'N', objSource: b.ctype === 'DL' ? checkSource(b.objSource) : null, values: [] };
+    comps.push(c);
+    return [201, compJson(c)];
+});
+
+route('PUT', '/components/:id', ([id], b) => {
+    const c = compOf(id);
+    const lib = 'lib' in b && b.lib ? b.lib.trim() : c.lib;
+    const ctype = b.ctype || c.ctype;
+    need(c.factory !== 'Y' || (lib === c.lib && ctype === c.ctype), 409, 'Composant standard : son libellé et son type ne peuvent pas changer');
+    need(ctype === c.ctype || !usage(c).length, 409, `Le type ne peut pas changer : composant utilisé par ${usage(c).length} champ(s)`);
+    need(CTYPE_OK.includes(ctype), 422, 'Type attendu : CT, CN, NB, DA, LI ou DL');
+    need(lib === c.lib || !comps.some((x) => x.lib === lib), 409, `Un composant porte déjà le libellé « ${lib} »`);
+    const list = ctype === 'LI' || ctype === 'DL';
+    const source = 'objSource' in b ? b.objSource : c.objSource;
+    Object.assign(c, { lib, ctype,
+        notes: 'notes' in b ? b.notes : c.notes, icon: 'icon' in b ? b.icon : c.icon,
+        vtype: list ? ('vtype' in b ? b.vtype : c.vtype) || 'LIST' : null,
+        objSource: ctype === 'DL' ? checkSource(source) : null });
+    return [200, compJson(c)];
+});
+
+route('DELETE', '/components/:id', ([id]) => {
+    const c = compOf(id);
+    need(c.factory !== 'Y', 409, 'Composant standard : il ne peut pas être supprimé');
+    const n = usage(c).length;
+    need(!n, 409, `Composant utilisé par ${n} champ(s) : supprimez-les ou changez leur composant d'abord`);
+    comps.splice(comps.indexOf(c), 1);
+    return [200, { deleted: id }];
+});
+
+route('PUT', '/components/:id/values', ([id], b) => {
+    const c = compOf(id);
+    need(c.ctype === 'LI' && c.lib !== 'Inline List', 422, 'Seules les listes statiques ont des valeurs enregistrées');
+    need(Array.isArray(b.values), 422, 'Attribut "values" attendu');
+    const seen = new Set();
+    let hasDefault = false;
+    c.values = b.values.map((v, n) => {
+        const r = String(v.r ?? '').trim();
+        need(r, 422, `Valeur ${n + 1} : la valeur enregistrée est obligatoire`);
+        need(!seen.has(r), 422, `Valeur « ${r} » en double`);
+        seen.add(r);
+        if (v.id) need(c.values.some((x) => x.id === v.id), 422, `Valeur ${v.id} inconnue pour ce composant`);
+        const isDefault = v.isDefault === 'Y' && !hasDefault ? 'Y' : 'N';
+        hasDefault ||= isDefault === 'Y';
+        return { id: v.id || nextId(), d: String(v.d ?? '').trim() || r, r, isDefault };
+    });
+    return [200, compJson(c)];
+});
+
+route('GET', '/components/:id/preview', ([id]) => {
+    const c = compOf(id);
+    if (c.ctype === 'LI') return [200, c.values.map(({ d, r }) => ({ d, r }))];
+    if (c.ctype === 'DL') return [200, VIEWS[checkSource(c.objSource)].map(([d, r]) => ({ d, r }))];
+    return [200, []];
+});
 
 // ---------------------------------------------------------------- server
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',

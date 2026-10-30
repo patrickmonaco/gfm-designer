@@ -24,7 +24,8 @@ create or replace package body gfm_builder
  *   context is opened).
  *
  * @author  P. Monaco - GPM Factory
- * @version 2.1 oct 2026 - APEX 26.1: wwv_flow_imp_page, named attributes
+ * @version 2.2 oct 2026 - list values sorted by GFM_LOV.SEQ
+ *          2.1 oct 2026 - APEX 26.1: wwv_flow_imp_page, named attributes
  *          2.0 oct 2026 - refactoring, bug fixes, documentation
  */
 as
@@ -1639,7 +1640,7 @@ begin
         return 'select lib_value d, c_value r'
             || ' from gfm_lov'
             || ' where comp_id = (select comp from gfm_items where id = ' || to_char(l_item_id) || ')'
-            || ' order by lib_value';
+            || ' order by seq nulls last, lib_value';
     else                                        -- dynamic list on an object (columns D, R)
         return 'select d, r from ' || dbms_assert.qualified_sql_name(l_source) || ' order by d';
     end if;
@@ -1653,7 +1654,7 @@ begin
         || ' from gfm_lov'
         || ' where comp_id in (select id from gfm_comp where lib = '
         ||     dbms_assert.enquote_literal(replace(plov, '''', '''''')) || ')'
-        || ' order by lib_value';
+        || ' order by seq nulls last, lib_value';
 end get_lov;
 
 function get_lov_master (id varchar2) 
@@ -1664,7 +1665,7 @@ begin
     return 'select lib_value d, c_value r'
         || ' from gfm_lov'
         || ' where comp_id = ' || dbms_assert.enquote_literal(replace(l_comp_id, '''', ''''''))
-        || ' order by lib_value';
+        || ' order by seq nulls last, lib_value';
 end get_lov_master;
 
 

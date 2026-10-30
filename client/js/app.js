@@ -1,12 +1,16 @@
-// GFM Designer - entry point: authentication, routing (?form=<id>).
+// GFM Designer - entry point: authentication, routing.
+//   ./                        forms list
+//   ?form=<id>                form editor
+//   ?view=components[&comp=n] components and lists of values
 import * as auth from './auth.js';
 import { api } from './api.js';
 import { showError, esc } from './ui.js';
 import { renderFormsList } from './forms.js';
 import { Editor } from './editor.js';
+import { ComponentsView } from './components.js';
 
 const root = document.getElementById('app');
-let editor = null;
+let current = null;        // view with destroy() / canLeave()
 
 function navigate(url) {
     history.pushState(null, '', url);
@@ -17,16 +21,40 @@ const openForm = (id) => navigate(`?form=${encodeURIComponent(id)}`);
 const openList = () => navigate(location.pathname);
 
 async function route() {
-    editor?.destroy();
-    editor = null;
-    const formId = new URLSearchParams(location.search).get('form');
-    document.body.classList.toggle('mode-editor', Boolean(formId));
-    if (formId) {
-        editor = new Editor(root, formId, { onBack: openList });
-        await editor.open();
+    current?.destroy?.();
+    current = null;
+    const params = new URLSearchParams(location.search);
+    const formId = params.get('form');
+    const view = formId ? 'editor' : params.get('view') === 'components' ? 'components' : 'forms';
+
+    document.body.classList.toggle('mode-editor', view === 'editor');
+    document.querySelectorAll('.app-nav [data-nav]').forEach((a) => {
+        const active = a.dataset.nav === view || (a.dataset.nav === 'forms' && view === 'editor');
+        a.classList.toggle('active', active);
+        if (active) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    });
+
+    if (view === 'editor') {
+        current = new Editor(root, formId, { onBack: openList });
+        await current.open();
+    } else if (view === 'components') {
+        current = new ComponentsView(root, params.get('comp'));
+        await current.open();
     } else {
         await renderFormsList(root, { openForm });
     }
+}
+
+/** Navigation links of the navbar, with confirmation of unsaved changes. */
+function bindNav() {
+    document.querySelectorAll('[data-nav]').forEach((a) => {
+        a.addEventListener('click', async (e) => {
+            e.preventDefault();
+            if (current?.canLeave && !await current.canLeave()) return;
+            if (current) current.dirty = false;
+            navigate(a.dataset.nav === 'components' ? '?view=components' : location.pathname);
+        });
+    });
 }
 
 function loginScreen() {
@@ -49,10 +77,7 @@ function loginScreen() {
 }
 
 async function start() {
-    document.querySelector('[data-nav=list]').addEventListener('click', (e) => {
-        e.preventDefault();
-        openList();
-    });
+    bindNav();
     window.addEventListener('popstate', route);
 
     let signedIn = false;

@@ -68,4 +68,10 @@ export const api = {
     itemLov: (id) => request('GET', `/items/${enc(id)}/lov`),
 
     components: () => request('GET', '/components'),
+    component: (id) => request('GET', `/components/${enc(id)}`),
+    createComponent: (body) => request('POST', '/components', body),
+    updateComponent: (id, body) => request('PUT', `/components/${enc(id)}`, body),
+    deleteComponent: (id) => request('DELETE', `/components/${enc(id)}`),
+    saveValues: (id, values) => request('PUT', `/components/${enc(id)}/values`, { values }),
+    previewComponent: (id) => request('GET', `/components/${enc(id)}/preview`),
 };

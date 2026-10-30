@@ -1,6 +1,12 @@
 // Small UI helpers: HTML escaping, toasts, confirmation and input dialogs.
 /* global bootstrap */
 
+/** In-app navigation: changes the URL and lets the router display the view. */
+export function navigate(url) {
+    history.pushState(null, '', url);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+}
+
 export const esc = (value) => String(value ?? '').replace(/[&<>"']/g,
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 

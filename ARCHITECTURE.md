@@ -10,8 +10,8 @@ Concepteur de formulaires GFM hors d'Oracle APEX : un client web JavaScript/Boot
 │  client/ (HTML, ES modules)  │ ──────────────────────────► │  module gfm.designer  /gfm/v1/            │
 │  Bootstrap 5 · SortableJS    │ ◄────────────────────────── │  privilège gfm.designer.priv (OAuth2)     │
 └──────────────┬───────────────┘                             └───────────────────┬───────────────────────┘
-               │ 1. redirection /oauth/auth (flux implicite)                     │ handlers PL/SQL
-               │ 2. jeton dans le fragment d'URL                                 ▼
+               │ 1. redirection /oauth/auth (authorization code)                 │ handlers PL/SQL
+               │ 2. code → /oauth/token → jeton                                  ▼
                │                                             ┌───────────────────────────────────────────┐
                │                                             │  Oracle Database (schéma DEMO)            │
                │                                             │  gfm_api      : API JSON, transactions    │
@@ -51,7 +51,8 @@ Concepteur de formulaires GFM hors d'Oracle APEX : un client web JavaScript/Boot
 - **Éditeur**, en trois colonnes :
   - **Palette** : « Section », les composants (`GFM_COMP` non internes) et les formulaires de détail utilisables comme sous-formulaires. En bas, la **corbeille**.
   - **Canevas** : aperçu du formulaire sur une grille de 12 colonnes, comme la grille APEX de la page générée. Une zone « en tête » accueille les champs hors section, puis viennent les sections.
-  - **Propriétés** : formulaire, section ou champ sélectionné, enregistrés automatiquement à chaque modification.
+  - **Propriétés** : formulaire, section ou champ sélectionné, enregistrés automatiquement à chaque modification. Un champ liste propose un lien vers les valeurs de son composant.
+- **Composants** : catalogue des composants (`GFM_COMP`) regroupés par type, création, propriétés, suppression. Pour une liste statique, un éditeur de valeurs (`GFM_LOV`) permet de modifier libellé et valeur, de choisir la valeur par défaut, de **réordonner par glisser-déposer** et de **coller une liste** depuis un tableur. Un aperçu montre la liste telle qu'elle apparaîtra dans le formulaire. Les composants standards (`FACTORY = 'Y'`) ne peuvent être ni renommés, ni changés de type, ni supprimés. Le type d'un composant utilisé est figé.
 
 ### Interactions en glisser-déposer
 
@@ -65,6 +66,7 @@ Concepteur de formulaires GFM hors d'Oracle APEX : un client web JavaScript/Boot
 | Bord droit d'un champ | Change la largeur par sixièmes de ligne (`COL_SPAN`) | `PUT /items/:id` |
 | Champ ou section → corbeille | Suppression, après confirmation | `DELETE /items/:id`, `DELETE /sections/:id` |
 | Valeurs d'une liste inline | Réordonne les valeurs | `PUT /items/:id` (`lov`) |
+| Valeurs d'un composant liste (écran Composants) | Réordonne les valeurs (enregistrées avec le bouton) | `PUT /components/:id/values` |
 
 Équivalents au clavier : `Tab` pour atteindre un champ, `Entrée` pour le sélectionner, `Alt+↑/↓` pour le déplacer, `Suppr` pour le supprimer.
 
@@ -73,12 +75,13 @@ Concepteur de formulaires GFM hors d'Oracle APEX : un client web JavaScript/Boot
 | Module | Contenu |
 |---|---|
 | `js/config.js` | URL de l'API, mode d'authentification, modèle d'URL des pages APEX |
-| `js/auth.js` | Flux implicite OAuth2 : redirection, lecture du jeton, expiration |
+| `js/auth.js` | OAuth2 (authorization code + PKCE, ou implicite) : redirection, échange du code, expiration |
 | `js/api.js` | Appels REST, gestion des erreurs et du 401 |
-| `js/app.js` | Démarrage et routage (`?form=<id>`) |
+| `js/app.js` | Démarrage et routage (`?form=<id>`, `?view=components&comp=<id>`) |
 | `js/forms.js` | Liste des formulaires |
 | `js/editor.js` | Éditeur : palette, canevas, glisser-déposer, redimensionnement, actions |
 | `js/props.js` | Panneau de propriétés |
+| `js/components.js` | Écran Composants : catalogue, propriétés, valeurs, aperçu |
 | `js/meta.js` | Libellés et icônes des codes GFM (`CTYPE`, `VTYPE`), largeurs |
 | `js/ui.js` | Échappement HTML, toasts, boîtes de dialogue |
 
@@ -104,7 +107,11 @@ Base : `https://<hôte>/ords/<schéma>/gfm/v1`. Tous les échanges sont en JSON.
 | POST | `/forms/:id/items` | `{compId, tcomp?, lib?, sectionId?, code?}` | 201 `{id, form}` |
 | PUT / DELETE | `/items/:id` | `{lib?, code?, description?, vtype?, lov?, mandatory?, newRow?, colSpan?, icon?, masterId?, masterValue?}` | formulaire |
 | GET | `/items/:id/lov` | — | `[{d, r}]`, valeurs d'un champ liste |
-| GET | `/components` | — | `{components: [...], detailForms: [...]}` |
+| GET | `/components` | — | `{components: [{…, factory, objSource, itemCount, valueCount}], detailForms: [...]}` |
+| POST | `/components` | `{lib, ctype, vtype?, notes?, icon?, groupe?, objSource?}` | 201 composant |
+| GET / PUT / DELETE | `/components/:id` | (PUT) attributs à modifier | composant `{…, forms, values: [{id, d, r, isDefault}]}`. DELETE : 409 si standard ou utilisé |
+| PUT | `/components/:id/values` | `{values: [{id?, d, r, isDefault}]}`, liste complète dans l'ordre | composant |
+| GET | `/components/:id/preview` | — | `[{d, r}]` tels qu'affichés, au plus 100 (liste dynamique : résultat de la vue) |
 
 **Formulaire complet**
 
@@ -128,17 +135,22 @@ Base : `https://<hôte>/ords/<schéma>/gfm/v1`. Tous les échanges sont en JSON.
 
 **Ordre des champs** : `save_layout` réécrit `GFM_SECTIONS.RANK`, puis `GFM_ITEMS.SECTION_ID`, `SECTION` (colonne historique) et `SEQ` (10, 20…) dans l'ordre reçu, d'abord les champs hors section, en une seule transaction. Cet ordre est celui qu'utilise `gfm_builder`.
 
+**Valeurs des listes** : `GFM_LOV.SEQ` (script `06_lov_order.sql`) fixe l'ordre d'affichage. `gfm_builder.get_lov` trie sur `SEQ`, puis sur le libellé. Comme les pages générées appellent `get_lov` à l'affichage, un nouvel ordre s'applique sans régénérer. `save_values` reçoit la liste complète : les valeurs avec `id` sont mises à jour, celles sans `id` sont insérées, et les absentes sont supprimées. Seule la colonne `C_VALUE` est utilisée, comme dans `get_lov`. La valeur enregistrée est obligatoire et unique dans la liste, le libellé reprend la valeur s'il est vide, et une seule valeur peut être celle par défaut.
+
+**Listes dynamiques** : `objSource` doit être une vue ou une table existante qui expose les colonnes `D` et `R`. Elle est vérifiée par `DBMS_ASSERT.SQL_OBJECT_NAME` et par une requête d'essai.
+
 **Codes** : `gfm_api` dérive le code d'un champ de son libellé : majuscules, sans accents, `[A-Z0-9_]`, 26 caractères au plus. Il le rend unique dans le formulaire et évite `SEQ_ID`, `FORM_ID`, `PARENT_ID` et `UPD_ID`. Le trigger `GFM_ITEMS_T1` ajoute toujours `$` aux mots réservés. Le code d'un formulaire est limité à 22 caractères pour laisser la place au suffixe d'une copie.
 
 ## 5. Sécurité
 
 - **Privilège ORDS `gfm.designer.priv`** sur tout le module, lié au rôle `gfm_designer` : tout appel sans jeton valide reçoit 401.
-- **Client web : flux OAuth2 implicite** (`gfm_designer_spa`). Le client redirige vers `/oauth/auth`, l'utilisateur s'identifie auprès d'ORDS, et le jeton revient dans le fragment d'URL. Le paramètre `state` est vérifié, le jeton est gardé en `sessionStorage` jusqu'à son expiration, et un 401 relance la connexion.
+- **Client web : flux OAuth2 *authorization code*** (`gfm_designer_web`, script `db/05_ords_client_code.sql`). Les versions récentes d'ORDS désactivent le flux implicite. Le client redirige vers `/oauth/auth`, l'utilisateur s'identifie auprès d'ORDS, et ORDS renvoie un code sur `index.html`. Le client échange ce code contre un jeton sur `/oauth/token`, en envoyant le `client_id`, le secret et un `code_verifier` PKCE. Le paramètre `state` est vérifié, le jeton est gardé en `sessionStorage` jusqu'à son expiration, et un 401 relance la connexion.
+- **Secret client visible dans le navigateur** : sans serveur intermédiaire, le secret figure dans `config.js`. Il ne suffit pas à obtenir un jeton, puisque l'utilisateur doit toujours s'identifier, et les URL de redirection sont restreintes. Ce client doit rester dédié à GFM Designer. Si ORDS accepte un jour le PKCE sans secret, il suffira de vider `clientSecret`. Sinon, la solution propre consiste à servir le client depuis le même hôte qu'ORDS, derrière un petit proxy qui fait l'échange du code.
 - **Utilisateurs** : ORDS les authentifie avec son propre référentiel. Quand ORDS est installé avec APEX, il peut s'appuyer sur les **utilisateurs du workspace APEX** : l'utilisateur doit alors appartenir à un groupe APEX nommé comme le rôle, `gfm_designer`. **À vérifier selon la configuration de votre ORDS.**
 - **Client de test `gfm_designer_cli`** (client credentials) pour curl et les scripts. Son secret ne doit jamais être mis dans le navigateur.
-- **CORS** : `p_origins_allowed` du module liste les origines autorisées à appeler l'API.
+- **CORS** : `ords.set_module_origins_allowed` (dans `03_ords_module.sql`) liste les origines autorisées à appeler l'API.
 - **Côté base** : `gfm_api` est en `authid definer` et ne fait de SQL dynamique que pour les requêtes de LOV, construites par `gfm_builder.get_lov` (noms validés par `DBMS_ASSERT`). Toutes les entrées passent par des variables liées.
-- Le flux implicite est celui qu'ORDS propose pour une application sans serveur, mais il est déconseillé par OAuth 2.1. Si votre ORDS le permet, le flux *authorization code* avec PKCE est préférable : seul `auth.js` serait à modifier.
+- `auth.js` sait aussi utiliser le flux implicite (`flow: 'implicit'`) pour un ORDS qui l'autorise encore.
 
 ## 6. Génération hors session APEX
 
@@ -153,11 +165,12 @@ Un **formulaire de détail** (`VTYPE = 'D'`) ne génère que sa vue : il s'affic
    cd db
    sql demo/<mot de passe>@<base> @install.sql
    ```
-   Avant de lancer le script, renseigner `c_origins` dans `03_ords_module.sql`, ainsi que `c_redirect_uri` et les adresses de support dans `04_ords_security.sql`. Si le schéma n'est pas encore REST, décommenter `ords.enable_schema` en tête de `03`.
+   Avant de lancer le script, renseigner `c_origins` dans `03_ords_module.sql`, ainsi que l'origine, `c_redirect_uri` et les adresses de support dans `05_ords_client_code.sql`. Si le schéma n'est pas encore REST, décommenter `ords.enable_schema` en tête de `03`.
 2. Facultatif : ajouter le paramètre `WORKSPACE` dans `GFM_SETUP` (`PARA_TYPE = 'C'`, `VALC = nom du workspace`).
 3. Créer le groupe d'utilisateurs APEX `gfm_designer` et y ajouter les concepteurs (voir § 5).
-4. Client : renseigner `client/js/config.js` (URL de l'API, `client_id` lu dans `user_ords_clients`, URL d'autorisation, URL des pages APEX). Déposer le dossier `client/` sur un hébergement statique accessible à l'URL de redirection : serveur web, OVH, ou fichiers statiques d'ORDS.
-5. Vérifier avec le client de test :
+4. Client OAuth : lancer `db/05_ords_client_code.sql`, qui crée le client `gfm_designer_web` et affiche son `client_id` et son `client_secret`.
+5. Client web : renseigner `client/js/config.js` : URL de l'API, `clientId`, `clientSecret`, `authorizeUrl`, `tokenUrl` et URL des pages APEX. Déposer le dossier `client/` sur un hébergement statique accessible à l'URL de redirection : serveur web, OVH, ou fichiers statiques d'ORDS.
+6. Vérifier avec le client de test :
    ```
    curl -u <client_id>:<secret> -d grant_type=client_credentials https://<hôte>/ords/<schéma>/oauth/token
    curl -H "Authorization: Bearer <jeton>" https://<hôte>/ords/<schéma>/gfm/v1/forms
@@ -177,12 +190,14 @@ La maquette sert le client et implémente toute l'API en mémoire, avec le même
 
 **Non vérifié** : le PL/SQL et les scripts ORDS n'ont été ni compilés ni exécutés. Points à surveiller au premier déploiement :
 - le statut HTTP posé par `owa_util.status_line` (sinon, utiliser le paramètre implicite `:status_code` d'ORDS) ;
-- la disponibilité du package `OAUTH` (sinon `ORDS_SECURITY` sur les ORDS récents) ;
-- la connexion des utilisateurs APEX au flux implicite ;
+- l'acceptation par ORDS des paramètres PKCE (`code_challenge`), envoyés en plus du secret ;
+- la connexion des utilisateurs APEX au flux *authorization code* ;
 - `apex_util.set_workspace` appelé depuis ORDS.
 
+**Mise à jour 1.0 → 1.1 (écran Composants)** : `db/update_v1.1.sql`. Il ajoute `GFM_LOV.SEQ`, recompile `gfm_builder` et `gfm_api`, recrée le module ORDS, puis relance `04` pour rattacher le privilège au module recréé.
+
 **Pas encore repris de l'application APEX** :
-- gestion des composants et de leurs valeurs (`GFM_COMP`, `GFM_LOV`) ;
+- composants système (`INTERNAL = 'Y'`, préférences `$…`), volontairement exclus de l'écran ;
 - paramètres (`GFM_SETUP`) ;
 - consultation des données saisies ;
 - copie de champs d'un formulaire à un autre (`copyItems`) ;
