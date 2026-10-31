@@ -3,6 +3,7 @@
 import { api } from './api.js';
 import { esc, html, toast, showError, confirmDialog, navigate } from './ui.js';
 import { CTYPES, VTYPES } from './meta.js';
+import { iconInput, bindIconInputs } from './icons.js';
 
 const TYPE_ORDER = ['CT', 'CN', 'NB', 'DA', 'LI', 'DL'];
 const typeLabel = (c) => (CTYPES[c] || {}).label || c;
@@ -176,7 +177,7 @@ export class ComponentsView {
                         </div>` : ''}
                         <div class="col-md-6">
                             <label class="form-label" for="c-icon">Icône</label>
-                            <input class="form-control" id="c-icon" data-field="icon" value="${esc(c.icon)}" maxlength="100" placeholder="fa-envelope-o">
+                            ${iconInput('c-icon', c.icon)}
                             <div class="form-text">Icône par défaut des champs (classe Font APEX).</div>
                         </div>
                         ${c.ctype === 'DL' ? `
@@ -232,6 +233,7 @@ export class ComponentsView {
             el.addEventListener('change', () => this.saveField(el.dataset.field, el.value.trim() || null, el));
         });
         this.$detail.querySelector('[data-act=delete]').addEventListener('click', () => this.remove());
+        bindIconInputs(this.$detail);
         this.$detail.querySelectorAll('[data-form]').forEach((a) => a.addEventListener('click', (e) => {
             e.preventDefault();
             this.canLeave().then((ok) => { if (ok) { this.dirty = false; navigate(`?form=${a.dataset.form}`); } });

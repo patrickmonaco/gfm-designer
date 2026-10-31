@@ -77,8 +77,6 @@ function loginScreen() {
 }
 
 async function start() {
-    bindNav();
-    window.addEventListener('popstate', route);
 
     let signedIn = false;
     try {
@@ -91,6 +89,10 @@ async function start() {
         return;
     }
 
+    // navigation only once signed in
+    document.querySelector('.app-nav').classList.remove('d-none');
+    bindNav();
+    window.addEventListener('popstate', route);
     if (auth.enabled()) {
         const btn = document.getElementById('logout');
         btn.classList.remove('d-none');

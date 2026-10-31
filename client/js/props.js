@@ -3,6 +3,7 @@
 /* global Sortable */
 import { api } from './api.js';
 import { esc, html, showError, navigate } from './ui.js';
+import { iconInput, bindIconInputs } from './icons.js';
 import { VTYPES, WIDTHS, PREF_LABELS, isList, itemTypeLabel, itemIcon } from './meta.js';
 
 const field = (id, label, control, help = '') => `
@@ -143,6 +144,7 @@ function itemProps(container, ed, item) {
                     <a href="?view=components&comp=${item.compId}" data-act="comp"><i class="bi bi-list-check me-1"></i>Modifier les valeurs de « ${esc(item.compLib)} »</a>
                     <span class="d-block text-body-secondary">Partagées par tous les champs de ce composant.</span></p>` : ''}
                 ${item.isInline === 'Y' ? `<div class="mb-3 lov-editor">
+                    <div class="alert alert-warning py-2 small lov-empty d-none" role="alert"><i class="bi bi-exclamation-triangle me-1"></i>Au moins une valeur est nécessaire pour générer le formulaire.</div>
                     <span class="form-label d-block">Valeurs de la liste</span>
                     <ul class="list-group list-group-sm lov-values"></ul>
                     <div class="input-group input-group-sm mt-2">
@@ -151,7 +153,7 @@ function itemProps(container, ed, item) {
                     </div>
                     <div class="form-text">Glissez les valeurs pour les réordonner.</div>
                 </div>` : ''}
-                ${field('p-icon', 'Icône', `<input class="form-control" id="p-icon" data-field="icon" value="${esc(item.icon)}" placeholder="${esc(item.compIcon || '')}" maxlength="100">`,
+                ${field('p-icon', 'Icône', iconInput('p-icon', item.icon, { placeholder: item.compIcon || '' }),
                     `Classe Font APEX, par exemple <code>fa-envelope-o</code>.${item.compIcon ? ` Vide : icône du composant (<code>${esc(item.compIcon)}</code>).` : ''}`)}
 
                 <h3 class="props-subtitle">Affichage conditionnel</h3>
@@ -171,6 +173,7 @@ function itemProps(container, ed, item) {
         ed.updateItem(item.id, { [name]: value }, { props });
     });
     container.querySelector('[data-act=delete]').addEventListener('click', () => ed.deleteItem(item.id));
+    bindIconInputs(container);
     container.querySelector('[data-act=comp]')?.addEventListener('click', (e) => {
         e.preventDefault();
         navigate(`?view=components&comp=${item.compId}`);
@@ -187,6 +190,7 @@ function inlineValues(container, ed, item) {
 
     const save = () => ed.updateItem(item.id, { lov: values.length ? values.join(':') : null });
     const draw = () => {
+        container.querySelector('.lov-empty').classList.toggle('d-none', values.length > 0);
         list.innerHTML = values.length ? '' : '<li class="list-group-item small text-body-secondary">Aucune valeur</li>';
         values.forEach((v, n) => {
             const li = html(`<li class="list-group-item d-flex align-items-center gap-2" data-value="${esc(v)}">

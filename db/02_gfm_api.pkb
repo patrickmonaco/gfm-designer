@@ -622,8 +622,23 @@ is
     l_app     number := app_id;
     l_form_js clob;
     l_json    clob;
+    l_empty   varchar2(4000);
 begin
     select * into l_form from gfm_form where id = p_id;
+
+    -- inline lists without values would produce a broken page
+    select listagg('« ' || i.lib || ' »', ', ') within group (order by i.seq)
+      into l_empty
+      from gfm_items i
+      join gfm_comp  c on c.id = i.comp
+     where i.form_id = p_id
+       and nvl(i.tcomp, 'C') = 'C'
+       and c.lib = c_inline_list
+       and replace(trim(i.lov), ':') is null;
+    if l_empty is not null then
+        fail(c_err_business, 'Listes sans valeur : ' || l_empty
+                             || '. Ajoutez au moins une valeur à chacune avant de générer.');
+    end if;
 
     set_apex_workspace;
 

@@ -58,3 +58,11 @@ export const PREF_LABELS = {
     $ITEM_HELP: 'Aide sur les champs',
     $PAGE_TEMPLATE: 'Modèle de page',
 };
+
+/** Blocking problem of an item for the generation, or null. */
+export function itemProblem(item) {
+    if (item.isInline === 'Y' && !(item.lov || '').split(':').some((v) => v.trim())) {
+        return 'Liste sans valeur : ajoutez au moins une valeur';
+    }
+    return null;
+}

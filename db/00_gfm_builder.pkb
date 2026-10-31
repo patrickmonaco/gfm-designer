@@ -24,7 +24,8 @@ create or replace package body gfm_builder
  *   context is opened).
  *
  * @author  P. Monaco - GPM Factory
- * @version 2.2 oct 2026 - list values sorted by GFM_LOV.SEQ
+ * @version 2.3 oct 2026 - explicit error for an inline list without values
+ *          2.2 oct 2026 - list values sorted by GFM_LOV.SEQ
  *          2.1 oct 2026 - APEX 26.1: wwv_flow_imp_page, named attributes
  *          2.0 oct 2026 - refactoring, bug fixes, documentation
  */
@@ -927,6 +928,11 @@ begin
 
             -- inline list => static LOV, otherwise SQL built at runtime by get_lov
             if r.comp_lib = c_inline_list then
+                -- an empty static LOV ('STATIC:') breaks the generated page
+                if replace(trim(r.lov), ':') is null then
+                    raise_application_error(c_err_metadata,
+                        'La liste inline ' || r.code || ' n''a aucune valeur');
+                end if;
                 l_lov          := static_lov(r.lov);
                 l_lov_language := null;
             else

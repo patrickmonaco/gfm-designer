@@ -3,7 +3,7 @@
 import config from './config.js';
 import { api } from './api.js';
 import { esc, html, toast, showError, confirmDialog, promptDialog, formatDate } from './ui.js';
-import { CTYPES, itemIcon, itemTypeLabel, gridSpan } from './meta.js';
+import { CTYPES, itemIcon, itemTypeLabel, gridSpan, itemProblem } from './meta.js';
 import { renderProps } from './props.js';
 
 const GRID_GAP = 8;   // px, must match .gfm-grid gap in app.css
@@ -224,16 +224,18 @@ export class Editor {
         const tile = (item) => {
             const master = item.masterId ? byId.get(item.masterId) : null;
             const span = gridSpan(item);
+            const problem = itemProblem(item);
             return `
-                <div class="gfm-item${sel === `item:${item.id}` ? ' is-selected' : ''}${item.tcomp === 'D' ? ' is-subform' : ''}"
+                <div class="gfm-item${sel === `item:${item.id}` ? ' is-selected' : ''}${item.tcomp === 'D' ? ' is-subform' : ''}${problem ? ' has-problem' : ''}"
                      data-id="${item.id}" data-select="item:${item.id}" tabindex="0"
                      style="grid-column: ${item.newRow === 'N' ? 'auto' : '1'} / span ${span}"
                      aria-label="${esc(item.lib)}">
                     <i class="bi ${itemIcon(item)} item-icon"></i>
                     <div class="item-text">
-                        <div class="item-label">${esc(item.lib)}${item.mandatory === 'Y' ? '<span class="req" title="Obligatoire">*</span>' : ''}</div>
+                        <div class="item-label">${item.icon || item.compIcon ? `<span class="fa ${esc(item.icon || item.compIcon)} item-fa" aria-hidden="true"></span>` : ''}${esc(item.lib)}${item.mandatory === 'Y' ? '<span class="req" title="Obligatoire">*</span>' : ''}</div>
                         <div class="item-meta"><span class="font-monospace">${esc(item.code)}</span> · ${esc(itemTypeLabel(item))}</div>
                     </div>
+                    ${problem ? `<span class="item-badge item-problem" title="${esc(problem)}"><i class="bi bi-exclamation-triangle-fill"></i></span>` : ''}
                     ${master ? `<span class="item-badge" title="Affiché si ${esc(master.lib)} ${item.masterValue ? `= ${esc(item.masterValue)}` : 'est renseigné'}"><i class="bi bi-diagram-2"></i></span>` : ''}
                     ${item.tcomp === 'D' ? '' : '<span class="resize-handle" title="Glisser pour changer la largeur"></span>'}
                 </div>`;
@@ -499,6 +501,15 @@ export class Editor {
     }
 
     async generate() {
+        // same rule as the server: refused before any call, first item selected
+        const problems = this.form.items.filter((i) => itemProblem(i));
+        if (problems.length) {
+            toast(`Listes sans valeur : ${problems.map((i) => `« ${i.lib} »`).join(', ')}. Ajoutez au moins une valeur avant de générer.`, 'danger');
+            this.select(`item:${problems[0].id}`);
+            this.$canvas.querySelector(`.gfm-item[data-id="${problems[0].id}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            this.$props.querySelector('#p-newval')?.focus();
+            return;
+        }
         const btn = this.$toolbar.querySelector('[data-act=generate]');
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span><span class="d-none d-sm-inline ms-1">Génération…</span>';
