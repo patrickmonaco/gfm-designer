@@ -55,7 +55,7 @@ export async function renderFormsList(root, { openForm }) {
                         </div>
                     </div>
                     <div class="card-footer bg-transparent d-flex align-items-center small text-body-secondary">
-                        <span class="me-auto">${f.pageId ? `Page ${f.pageId}` : 'Sans page'}${f.lastBuild ? ` · générée le ${esc(formatDate(f.lastBuild))}` : ' · jamais générée'}</span>
+                        <span class="me-auto">${f.pageId ? `Page ${f.pageId}${f.reportPageId ? `, rapport ${f.reportPageId}` : ''}` : 'Sans page'}${f.lastBuild ? ` · générée le ${esc(formatDate(f.lastBuild))}` : ' · jamais générée'}</span>
                         <div class="dropdown position-relative card-menu">
                             <button class="btn btn-sm btn-link text-body-secondary" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Actions">
                                 <i class="bi bi-three-dots-vertical"></i>

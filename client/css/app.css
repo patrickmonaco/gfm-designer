@@ -286,3 +286,7 @@ body.is-dragging .gfm-grid { outline: 1px dashed var(--gfm-accent); outline-offs
     .icon-picker .modal-header .d-flex { flex-direction: column; }
     .icon-cat { max-width: none; }
 }
+
+/* item that blocks the generation */
+.gfm-item.has-problem { border-color: var(--bs-warning); background: var(--bs-warning-bg-subtle); }
+.item-problem { color: var(--bs-warning-text-emphasis); }

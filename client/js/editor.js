@@ -134,6 +134,8 @@ export class Editor {
         const f = this.form;
         const pageUrl = f.pageId && f.appId && f.isFormGenerated === 'Y'
             ? config.apexPageUrl.replace('{app}', f.appId).replace('{page}', f.pageId) : null;
+        const reportUrl = f.reportPageId && f.appId && f.isFormGenerated === 'Y'
+            ? config.apexPageUrl.replace('{app}', f.appId).replace('{page}', f.reportPageId) : null;
         this.$toolbar.innerHTML = `
             <button class="btn btn-sm btn-outline-secondary" type="button" data-act="back" aria-label="Retour à la liste">
                 <i class="bi bi-arrow-left"></i>
@@ -145,13 +147,15 @@ export class Editor {
                 </div>
                 <div class="small text-body-secondary text-truncate">
                     <span class="font-monospace">${esc(f.code)}</span>
-                    ${f.pageId ? ` · page ${f.pageId}` : ''}
+                    ${f.pageId ? ` · page ${f.pageId}` : ''}${f.reportPageId ? `, rapport ${f.reportPageId}` : ''}
                     · ${f.lastBuild ? `générée le ${esc(formatDate(f.lastBuild))}` : 'jamais générée'}
                 </div>
             </div>
             <span class="save-state small text-body-secondary d-none d-md-inline"><i class="bi bi-cloud-check me-1"></i>Enregistré</span>
             ${pageUrl ? `<a class="btn btn-sm btn-outline-secondary" href="${esc(pageUrl)}" target="_blank" rel="noopener">
                 <i class="bi bi-box-arrow-up-right"></i><span class="d-none d-lg-inline ms-1">Ouvrir la page</span></a>` : ''}
+            ${reportUrl ? `<a class="btn btn-sm btn-outline-secondary" href="${esc(reportUrl)}" target="_blank" rel="noopener" title="Report interactif des données saisies">
+                <i class="bi bi-table"></i><span class="d-none d-lg-inline ms-1">Rapport</span></a>` : ''}
             <button class="btn btn-sm btn-primary" type="button" data-act="generate">
                 <i class="bi bi-lightning-charge"></i><span class="d-none d-sm-inline ms-1">Générer</span>
             </button>`;

@@ -1,2 +1,0 @@
-NAME	CLIENT_ID	CLIENT_SECRET
-gfm_designer_web	teZwr8jkfPXgi_Ohhymquw..	_j3ObUNBzcriifSN6i6xew..
