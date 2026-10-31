@@ -4,7 +4,7 @@
 import { api } from './api.js';
 import { esc, html, showError, navigate } from './ui.js';
 import { iconInput, bindIconInputs } from './icons.js';
-import { VTYPES, WIDTHS, PREF_LABELS, isList, itemTypeLabel, itemIcon } from './meta.js';
+import { VTYPES, WIDTHS, PREF_LABELS, FORM_TYPES, SCOPES, isList, itemTypeLabel, itemIcon } from './meta.js';
 
 const field = (id, label, control, help = '') => `
     <div class="mb-3">
@@ -55,10 +55,19 @@ function formProps(container, ed) {
                 'Titre de la région principale de la page générée.')}
             ${field('p-vtype', 'Type', `
                 <select class="form-select" id="p-vtype" data-field="vtype">
-                    <option value="M" ${f.vtype !== 'D' ? 'selected' : ''}>Maître : page APEX</option>
-                    <option value="D" ${f.vtype === 'D' ? 'selected' : ''}>Détail : grille dans un maître</option>
+                    ${Object.entries(FORM_TYPES).map(([code, ft]) => `
+                        <option value="${code}" ${code === (f.vtype || 'M') ? 'selected' : ''}>${esc(ft.label)} : ${esc(ft.help.toLowerCase())}</option>`).join('')}
+                </select>`)}
+
+            <h3 class="props-subtitle">Accès et publication</h3>
+            ${field('p-scope', 'Portée', `
+                <select class="form-select" id="p-scope" data-field="scope">
+                    ${Object.entries(SCOPES).map(([code, s]) => `
+                        <option value="${code}" ${code === String(f.scope ?? '0') ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}
                 </select>`)}
             ${toggle('p-authent', 'authent', 'Authentification requise', f.authent === 'Y')}
+            ${toggle('p-published', 'isPublished', 'Publié', f.isPublished === 'Y')}
+            <p class="form-text mt-0">La portée et la publication sont enregistrées ; leur effet sera mis en place prochainement.</p>
             <dl class="props-facts">
                 <dt>Code</dt><dd class="font-monospace">${esc(f.code)}</dd>
                 <dt>Page APEX</dt><dd>${f.pageId ?? '—'}</dd>
@@ -163,6 +172,12 @@ function itemProps(container, ed, item) {
                         ${others.map((o) => `<option value="${o.id}" ${o.id === item.masterId ? 'selected' : ''}>${esc(o.lib)}</option>`).join('')}
                     </select>`)}
                 <div class="master-value"></div>`}
+            ${sub ? '' : `<dl class="props-facts mt-3">
+                <dt>Stockage</dt>
+                <dd>${item.mapCol
+                    ? `<span class="font-monospace">${esc(item.mapCol)}</span> · ${{ N: 'nombre', D: 'date' }[item.mapCol[0]] || 'texte'}`
+                    : 'attribué à la prochaine génération'}</dd>
+            </dl>`}
             <button class="btn btn-outline-danger btn-sm mt-2" type="button" data-act="delete"><i class="bi bi-trash3 me-1"></i>Supprimer le champ</button>
         </div>`));
 

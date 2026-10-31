@@ -3,7 +3,7 @@
 import config from './config.js';
 import { api } from './api.js';
 import { esc, html, toast, showError, confirmDialog, promptDialog, formatDate } from './ui.js';
-import { CTYPES, itemIcon, itemTypeLabel, gridSpan, itemProblem } from './meta.js';
+import { CTYPES, itemIcon, itemTypeLabel, gridSpan, itemProblem, formType } from './meta.js';
 import { renderProps } from './props.js';
 
 const GRID_GAP = 8;   // px, must match .gfm-grid gap in app.css
@@ -143,12 +143,13 @@ export class Editor {
             <div class="min-w-0 me-auto">
                 <div class="d-flex align-items-center gap-2">
                     <h1 class="h5 mb-0 text-truncate">${esc(f.lib)}</h1>
-                    <span class="badge ${f.vtype === 'D' ? 'text-bg-info' : 'text-bg-secondary'}">${f.vtype === 'D' ? 'Détail' : 'Maître'}</span>
+                    <span class="badge ${formType(f.vtype).badge}">${esc(formType(f.vtype).label)}</span>
+                    ${f.isPublished === 'Y' ? '<span class="badge text-bg-success">Publié</span>' : ''}
                 </div>
                 <div class="small text-body-secondary text-truncate">
                     <span class="font-monospace">${esc(f.code)}</span>
                     ${f.pageId ? ` · page ${f.pageId}` : ''}${f.reportPageId ? `, rapport ${f.reportPageId}` : ''}
-                    · ${f.lastBuild ? `générée le ${esc(formatDate(f.lastBuild))}` : 'jamais générée'}
+                    · ${f.vtype === 'B' ? 'bloc, non généré' : f.lastBuild ? `générée le ${esc(formatDate(f.lastBuild))}` : 'jamais générée'}
                 </div>
             </div>
             <span class="save-state small text-body-secondary d-none d-md-inline"><i class="bi bi-cloud-check me-1"></i>Enregistré</span>
@@ -156,11 +157,11 @@ export class Editor {
                 <i class="bi bi-box-arrow-up-right"></i><span class="d-none d-lg-inline ms-1">Ouvrir la page</span></a>` : ''}
             ${reportUrl ? `<a class="btn btn-sm btn-outline-secondary" href="${esc(reportUrl)}" target="_blank" rel="noopener" title="Report interactif des données saisies">
                 <i class="bi bi-table"></i><span class="d-none d-lg-inline ms-1">Rapport</span></a>` : ''}
-            <button class="btn btn-sm btn-primary" type="button" data-act="generate">
+            ${f.vtype === 'B' ? '' : `<button class="btn btn-sm btn-primary" type="button" data-act="generate">
                 <i class="bi bi-lightning-charge"></i><span class="d-none d-sm-inline ms-1">Générer</span>
-            </button>`;
+            </button>`}`;
         this.$toolbar.querySelector('[data-act=back]').addEventListener('click', () => this.onBack());
-        this.$toolbar.querySelector('[data-act=generate]').addEventListener('click', () => this.generate());
+        this.$toolbar.querySelector('[data-act=generate]')?.addEventListener('click', () => this.generate());
         this.setBusy(0);
     }
 
@@ -517,7 +518,7 @@ export class Editor {
         const btn = this.$toolbar.querySelector('[data-act=generate]');
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span><span class="d-none d-sm-inline ms-1">Génération…</span>';
-        const res = await this.mutate(() => api.generate(this.formId), { message: (r) => r.message });
+        const res = await this.mutate(() => api.generate(this.formId), { props: true, message: (r) => r.message });
         if (!res) this.renderToolbar();
     }
 

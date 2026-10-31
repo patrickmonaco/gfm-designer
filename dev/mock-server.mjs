@@ -56,7 +56,7 @@ const prefs = [];        // {formId, pref, val}
 const data = [];         // {formId}
 
 function addForm(f) {
-    const form = { id: nextId(), notes: null, vtype: 'M', authent: 'Y', pageId: null, lastBuild: null,
+    const form = { id: nextId(), notes: null, vtype: 'M', authent: 'Y', scope: '0', isPublished: 'N', pageId: null, reportPageId: null, lastBuild: null,
         isViewGenerated: 'N', isFormGenerated: 'N', ...f };
     forms.push(form);
     prefs.push({ formId: form.id, pref: '$ITEM_TEMPLATE', val: 'FLOATING' },
@@ -127,7 +127,9 @@ function formCode(text) {
     for (let n = 0; n < 12; n++) data.push({ formId: f.id });
     void nom;
 
-    addForm({ lib: 'Demande de badge', code: 'DEMANDE_DE_BADGE', pageId: 103, notes: 'Badge d\'accès temporaire' });
+    addForm({ lib: 'Demande de badge', code: 'DEMANDE_DE_BADGE', pageId: 103, notes: 'Badge d\'accès temporaire', isPublished: 'Y', scope: '1' });
+    const bloc = addForm({ lib: 'Coordonnées', code: 'COORDONNEES', vtype: 'B', notes: 'Adresse, téléphone et email à reprendre dans les formulaires' });
+    for (const lib of ['Adresse', 'Téléphone', 'Email']) addItem(bloc.id, null, lib === 'Email' ? 11 : 6, lib);
 })();
 
 // ------------------------------------------------------------- documents
@@ -136,7 +138,8 @@ function formJson(id) {
     if (!f) throw httpError(404, `Formulaire ${id} introuvable`);
     return {
         id: f.id, lib: f.lib, code: f.code, notes: f.notes, vtype: f.vtype, authent: f.authent,
-        pageId: f.pageId, appId: APP_ID, lastBuild: f.lastBuild,
+        scope: f.scope, isPublished: f.isPublished,
+        pageId: f.pageId, reportPageId: f.reportPageId, appId: APP_ID, lastBuild: f.lastBuild,
         isViewGenerated: f.isViewGenerated, isFormGenerated: f.isFormGenerated,
         dataCount: data.filter((d) => d.formId === id).length,
         sections: sections.filter((s) => s.formId === id).sort((a, b) => a.rank - b.rank || a.id - b.id)
@@ -149,6 +152,7 @@ function formJson(id) {
                 compLib: d ? d.lib : c?.lib, ctype: d ? 'SF' : c?.ctype, isInline: c?.lib === 'Inline List' ? 'Y' : 'N',
                 vtype: i.vtype, lov: i.lov, sectionId: i.sectionId, seq: i.seq, newRow: i.newRow, mandatory: i.mandatory,
                 colSpan: i.colSpan, icon: i.icon, compIcon: c?.icon || null, masterId: i.masterId, masterValue: i.masterValue, mapId: i.mapId,
+                mapCol: i.mapCol || (i.mapId ? `C${String(i.mapId).padStart(3, '0')}` : null),
             };
         }),
         prefs: comps.filter((c) => c.internal === 'Y' && c.lib.startsWith('$')).sort((a, b) => a.lib.localeCompare(b.lib)).map((c) => ({
@@ -174,7 +178,7 @@ const route = (method, pattern, fn) => routes.push({ method, re: new RegExp(`^${
 route('GET', '/info', () => [200, { user: 'DEV', appId: APP_ID, version: '1.0-mock' }]);
 
 route('GET', '/forms', () => [200, forms.slice().sort((a, b) => a.lib.localeCompare(b.lib)).map((f) => ({
-    id: f.id, lib: f.lib, code: f.code, notes: f.notes, vtype: f.vtype, authent: f.authent, pageId: f.pageId, lastBuild: f.lastBuild,
+    id: f.id, lib: f.lib, code: f.code, notes: f.notes, vtype: f.vtype, authent: f.authent, scope: f.scope, isPublished: f.isPublished, pageId: f.pageId, reportPageId: f.reportPageId, lastBuild: f.lastBuild,
     itemCount: items.filter((i) => i.formId === f.id).length,
     sectionCount: sections.filter((s) => s.formId === f.id).length,
     dataCount: data.filter((d) => d.formId === f.id).length,
@@ -182,10 +186,14 @@ route('GET', '/forms', () => [200, forms.slice().sort((a, b) => a.lib.localeComp
 
 route('POST', '/forms', (_, b) => {
     need(b.lib && b.lib.trim(), 422, 'Le libellé du formulaire est obligatoire');
-    const used = new Set(forms.map((f) => f.pageId));
+    const used = new Set(forms.flatMap((f) => [f.pageId, f.reportPageId]));
     let page = 101; while (used.has(page)) page++;
-    const f = addForm({ lib: b.lib.trim(), notes: b.notes || null, code: formCode(b.lib), vtype: b.vtype === 'D' ? 'D' : 'M',
-        authent: yn(b.authent, 'Y'), pageId: page });
+    const vtype = b.vtype || 'M';
+    need(['M', 'D', 'B'].includes(vtype), 422, 'Type de formulaire attendu : M (formulaire), D (grille) ou B (bloc)');
+    const scope = String(b.scope ?? '0');
+    need(['0', '1', '2'].includes(scope), 422, 'Portée attendue : 0 (public), 1 (groupe) ou 2 (privé)');
+    const f = addForm({ lib: b.lib.trim(), notes: b.notes || null, code: formCode(b.lib), vtype, scope,
+        authent: yn(b.authent, 'Y'), isPublished: yn(b.isPublished, 'N'), pageId: vtype === 'M' ? page : null });
     return [201, { id: f.id, form: formJson(f.id) }];
 });
 
@@ -195,8 +203,15 @@ route('PUT', '/forms/:id', ([id], b) => {
     const f = formOf(id);
     if ('lib' in b && b.lib) f.lib = b.lib;
     if ('notes' in b) f.notes = b.notes;
-    if ('vtype' in b) { need(['M', 'D'].includes(b.vtype), 422, 'Type de formulaire attendu : M (maître) ou D (détail)'); f.vtype = b.vtype; }
+    if ('vtype' in b) {
+        need(['M', 'D', 'B'].includes(b.vtype), 422, 'Type de formulaire attendu : M (formulaire), D (grille) ou B (bloc)');
+        const used = items.filter((i) => i.tcomp === 'D' && i.compId === id && i.formId !== id).length;
+        need(f.vtype !== 'D' || b.vtype === 'D' || !used, 409, `Cette grille est utilisée par ${used} formulaire(s) : son type ne peut pas changer`);
+        f.vtype = b.vtype;
+    }
+    if ('scope' in b) { need(['0', '1', '2'].includes(String(b.scope)), 422, 'Portée attendue : 0 (public), 1 (groupe) ou 2 (privé)'); f.scope = String(b.scope); }
     if ('authent' in b) f.authent = yn(b.authent, 'Y');
+    if ('isPublished' in b) f.isPublished = yn(b.isPublished, 'N');
     return [200, formJson(id)];
 });
 
@@ -206,20 +221,29 @@ route('DELETE', '/forms/:id', ([id], _, q) => {
     need(!used, 409, `Ce formulaire est utilisé comme sous-formulaire par ${used} champ(s) : supprimez-les d'abord`);
     const n = data.filter((d) => d.formId === id).length;
     need(!n || q.get('force') === 'Y', 409, `Le formulaire contient ${n} enregistrement(s) : confirmez pour les supprimer aussi`);
+    const f = forms.find((x) => x.id === id);
+    const removed = [];
+    if (f.isFormGenerated === 'Y') {
+        for (const p of [f.pageId, f.reportPageId]) if (p) removed.push(`page ${p} supprimée`);
+    }
+    if (f.isViewGenerated === 'Y') {
+        if (f.vtype === 'M') removed.push(`vue G$_${f.code}_R supprimée`);
+        removed.push(`vue G$_${f.code} supprimée`);
+    }
     const drop = (arr, pred) => { for (let k = arr.length - 1; k >= 0; k--) if (pred(arr[k])) arr.splice(k, 1); };
     drop(data, (d) => d.formId === id); drop(items, (i) => i.formId === id);
     drop(sections, (s) => s.formId === id); drop(prefs, (p) => p.formId === id); drop(forms, (f) => f.id === id);
-    return [200, { deleted: id }];
+    return [200, { deleted: id, message: removed.join(', ') }];
 });
 
 route('POST', '/forms/:id/copy', ([id]) => {
     const src = formOf(id);
     const suffix = `_${new Date().toTimeString().slice(0, 8).replace(/:/g, '')}`;
-    const used = new Set(forms.map((f) => f.pageId));
+    const used = new Set(forms.flatMap((f) => [f.pageId, f.reportPageId]));
     let page = 101; while (used.has(page)) page++;
     const { id: _ignored, ...props } = src;
     const f = addForm({ ...props, lib: src.lib + suffix, code: src.code.slice(0, 18) + suffix, pageId: page,
-        lastBuild: null, isViewGenerated: 'N', isFormGenerated: 'N' });
+        reportPageId: null, lastBuild: null, isViewGenerated: 'N', isFormGenerated: 'N' });
     // preferences of the source instead of the defaults
     for (let k = prefs.length - 1; k >= 0; k--) if (prefs[k].formId === f.id) prefs.splice(k, 1);
     prefs.push(...prefs.filter((p) => p.formId === id).map((p) => ({ ...p, formId: f.id })));
@@ -233,23 +257,50 @@ route('POST', '/forms/:id/copy', ([id]) => {
 
 route('POST', '/forms/:id/generate', ([id]) => {
     const f = formOf(id);
+    need(f.vtype !== 'B', 422, 'Un bloc n\'est pas généré : il sert de groupe de champs réutilisable');
     const formItems = items.filter((i) => i.formId === id);
-    let slot = Math.max(0, ...formItems.map((i) => i.mapId || 0));
-    for (const i of formItems) if (!i.mapId && i.tcomp === 'C') i.mapId = ++slot;
+    const empty = formItems.filter((i) => i.tcomp === 'C' && comps.find((c) => c.id === i.compId)?.lib === 'Inline List'
+        && !(i.lov || '').replace(/:/g, '').trim()).map((i) => `« ${i.lib} »`);
+    need(!empty.length, 422, `Listes sans valeur : ${empty.join(', ')}. Ajoutez au moins une valeur à chacune avant de générer.`);
+    // storage columns by type (same rules as gfm_builder): N001 reserved, 20 N / 20 D, 50 C
+    const colOf = (i) => i.mapCol || (i.mapId ? `C${String(i.mapId).padStart(3, '0')}` : null);
+    const free = (family, max) => {
+        const used = new Set(formItems.map(colOf).filter(Boolean));
+        for (let n = 1; n <= max; n++) {
+            const col = `${family}${String(n).padStart(3, '0')}`;
+            if (col !== 'N001' && !used.has(col)) return col;
+        }
+        return null;
+    };
+    for (const i of formItems.filter((x) => x.tcomp === 'C' && !colOf(x)).sort((a, b) => a.seq - b.seq)) {
+        const ctype = comps.find((c) => c.id === i.compId)?.ctype;
+        const family = ctype === 'NB' ? 'N' : ctype === 'DA' ? 'D' : 'C';
+        const col = (family !== 'C' && free(family, 20)) || free('C', 50);
+        need(col, 422, `Plus de colonne disponible dans GFM_DATA pour le champ ${i.code}`);
+        i.mapCol = col;
+        i.mapId = Number(col.slice(1));
+    }
     f.isViewGenerated = 'Y';
     let message = 'Vue générée. Régénérez les formulaires maîtres qui utilisent ce sous-formulaire';
     if (f.vtype === 'M') {
         f.isFormGenerated = 'Y';
         f.lastBuild = new Date().toISOString().slice(0, 19);
-        message = `Page ${f.pageId} générée dans l'application ${APP_ID}`;
+        let reportMsg = 'inchangé';
+        if (!f.reportPageId) {
+            const used = new Set(forms.flatMap((x) => [x.pageId, x.reportPageId]));
+            let page = 101; while (used.has(page)) page++;
+            f.reportPageId = page;
+            reportMsg = 'régénéré';
+        }
+        message = `Page ${f.pageId} générée (rapport ${f.reportPageId} ${reportMsg}) dans l'application ${APP_ID}`;
     }
-    return [200, { appId: APP_ID, pageId: f.vtype === 'M' ? f.pageId : null, message, form: formJson(id) }];
+    return [200, { appId: APP_ID, pageId: f.vtype === 'M' ? f.pageId : null, reportPageId: f.reportPageId, message, form: formJson(id) }];
 });
 
 route('POST', '/forms/:id/reset', ([id]) => {
     formOf(id);
     for (let k = data.length - 1; k >= 0; k--) if (data[k].formId === id) data.splice(k, 1);
-    for (const i of items.filter((i) => i.formId === id)) i.mapId = null;
+    for (const i of items.filter((i) => i.formId === id)) { i.mapId = null; i.mapCol = null; }
     forms.find((f) => f.id === id).isViewGenerated = 'N';
     return [200, formJson(id)];
 });

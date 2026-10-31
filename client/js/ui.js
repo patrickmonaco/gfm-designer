@@ -95,8 +95,11 @@ export function promptDialog(title, label, value = '') {
     });
 }
 
-/** Form creation dialog: resolves {lib, notes, vtype} or null. */
-export function newFormDialog() {
+/**
+ * Form creation dialog: resolves {lib, notes, vtype, scope, authent, isPublished}
+ * or null. types / scopes: FORM_TYPES / SCOPES of meta.js.
+ */
+export function newFormDialog(types, scopes) {
     return modal({
         title: 'Nouveau formulaire',
         okLabel: 'Créer',
@@ -111,17 +114,37 @@ export function newFormDialog() {
                 <label class="form-label" for="nf-notes">Description</label>
                 <textarea class="form-control" id="nf-notes" rows="2" maxlength="1000"></textarea>
             </div>
-            <div>
-                <span class="form-label d-block">Type</span>
-                <div class="form-check form-check-inline">
-                    <input class="form-check-input" type="radio" name="nf-vtype" id="nf-m" value="M" checked>
-                    <label class="form-check-label" for="nf-m">Maître (page APEX)</label>
+            <fieldset class="mb-3">
+                <legend class="form-label fs-6 mb-2">Type</legend>
+                <div class="type-choices">
+                    ${Object.entries(types).map(([code, t], n) => `
+                        <input class="btn-check" type="radio" name="nf-vtype" id="nf-t-${code}" value="${code}" ${n === 0 ? 'checked' : ''}>
+                        <label class="type-choice" for="nf-t-${code}">
+                            <i class="bi ${t.icon}"></i>
+                            <span class="fw-medium">${esc(t.label)}</span>
+                            <span class="small text-body-secondary">${esc(t.help)}</span>
+                        </label>`).join('')}
                 </div>
-                <div class="form-check form-check-inline">
-                    <input class="form-check-input" type="radio" name="nf-vtype" id="nf-d" value="D">
-                    <label class="form-check-label" for="nf-d">Détail (grille dans un maître)</label>
+            </fieldset>
+            <div class="row g-3 align-items-end">
+                <div class="col-sm-6">
+                    <label class="form-label" for="nf-scope">Portée</label>
+                    <select class="form-select" id="nf-scope">
+                        ${Object.entries(scopes).map(([code, s]) => `<option value="${code}">${esc(s.label)}</option>`).join('')}
+                    </select>
                 </div>
-            </div>`,
+                <div class="col-sm-6">
+                    <div class="form-check form-switch mb-1">
+                        <input class="form-check-input" type="checkbox" role="switch" id="nf-authent" checked>
+                        <label class="form-check-label" for="nf-authent">Authentification requise</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="nf-published">
+                        <label class="form-check-label" for="nf-published">Publié</label>
+                    </div>
+                </div>
+            </div>
+            <p class="form-text mb-0 mt-2">La portée et la publication sont enregistrées ; leur effet sera mis en place prochainement.</p>`,
         onOk: (el) => {
             const lib = el.querySelector('#nf-lib');
             if (!lib.value.trim()) { lib.classList.add('is-invalid'); return undefined; }
@@ -129,6 +152,9 @@ export function newFormDialog() {
                 lib: lib.value.trim(),
                 notes: el.querySelector('#nf-notes').value.trim() || null,
                 vtype: el.querySelector('[name=nf-vtype]:checked').value,
+                scope: el.querySelector('#nf-scope').value,
+                authent: el.querySelector('#nf-authent').checked ? 'Y' : 'N',
+                isPublished: el.querySelector('#nf-published').checked ? 'Y' : 'N',
             };
         },
     });

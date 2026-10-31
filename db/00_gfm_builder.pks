@@ -21,7 +21,8 @@ create or replace package gfm_builder
  *   3. generate_form(form_id, page) -- APEX page
  *
  * @author  P. Monaco - GPM Factory
- * @version 2.1  oct 2026 - APEX 26.1: wwv_flow_imp_page, named attributes
+ * @version 2.4  oct 2026 - interactive report page (generate_report)
+ *          2.1  oct 2026 - APEX 26.1: wwv_flow_imp_page, named attributes
  *          2.0  oct 2026 - refactoring, bug fixes, documentation
  *          1.2  sep 2022
  *          1.1  jan 2022
@@ -47,11 +48,46 @@ function generate_form(fid number, pid number DEFAULT null)
 return number;
 
 /**
+ * Generates the interactive report page of a master form, on the report
+ * view G$_<CODE>_R created by generate_ddl. The record number opens the form
+ * page (GFM_FORM.PAGE_ID) and a "Nouveau" button creates a record.
+ *
+ * The page is regenerated only when its columns (name, heading, type) differ
+ * from the report view, or when pforce = 'Y': regenerating deletes the
+ * reports saved by the users.
+ *
+ * @param  fid     form id
+ * @param  pid     report page id; when null, GFM_FORM.REPORT_PAGE_ID
+ * @param  pforce  'Y' to regenerate even if the columns are unchanged
+ * @return 0 page generated, 1 page unchanged
+ * @raises ORA-20201 "<step> - <error>" on any failure (transaction rolled back)
+ */
+function generate_report(fid number, pid number default null, pforce varchar2 default 'N')
+return number;
+
+/**
+ * Removes what the generation produced for a form, before deleting it:
+ *   - form page and report page of the target application (GFM_SETUP
+ *     APP_RUN_ID), only if they contain a region on the view of the form
+ *     (a page reused for something else is kept and reported);
+ *   - views G$_<CODE> and G$_<CODE>_R (the INSTEAD OF trigger goes with the view).
+ * The form metadata is not deleted. Requires the APEX workspace to be set
+ * outside an APEX session. DDL: commits.
+ *
+ * @param  fid  form id
+ * @return summary of what was removed / kept, e.g. "page 102 supprimée, ..."
+ */
+function remove_generated(fid number)
+return varchar2;
+
+/**
  * Generates the database objects supporting a form:
  *   - allocates a GFM_DATA slot column (MAP_ID) to each new item,
  *   - creates the view G$_<CODE> mapping slot columns to item codes,
  *   - adds a disabled primary key on SEQ_ID (needed by the APEX form region),
  *   - creates the INSTEAD OF INSERT trigger G$_<CODE>_TRG,
+ *   - master form: creates the report view G$_<CODE>_R (typed numbers and
+ *     dates, list labels, audit columns) used by generate_report,
  *   - synchronises APEX UI defaults (labels, help texts).
  *
  * Note: DDL statements commit implicitly.

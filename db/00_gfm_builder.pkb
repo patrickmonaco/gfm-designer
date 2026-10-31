@@ -24,7 +24,11 @@ create or replace package body gfm_builder
  *   context is opened).
  *
  * @author  P. Monaco - GPM Factory
- * @version 2.3 oct 2026 - explicit error for an inline list without values
+ * @version 2.7 oct 2026 - remove_generated: pages and views of a deleted form
+ *          2.6 oct 2026 - NUMBER / DATE storage columns (GFM_ITEMS.MAP_COL)
+ *          2.5 oct 2026 - IG: reuse the report / view created with the grid
+ *          2.4 oct 2026 - report view G$_<CODE>_R and interactive report page
+ *          2.3 oct 2026 - explicit error for an inline list without values
  *          2.2 oct 2026 - list values sorted by GFM_LOV.SEQ
  *          2.1 oct 2026 - APEX 26.1: wwv_flow_imp_page, named attributes
  *          2.0 oct 2026 - refactoring, bug fixes, documentation
@@ -50,7 +54,10 @@ c_page_slot_min  constant pls_integer := 101;
 c_page_slot_max  constant pls_integer := 400;
 
 -- Page displayed after processing (branches)
-c_return_page    constant pls_integer := 20;
+c_return_page    constant pls_integer := 20;   -- when the form has no report page
+
+-- Storage format of the dates in GFM_DATA (VARCHAR2), unless GFM_SETUP.DATE_FORMAT
+c_date_format    constant varchar2(30) := 'MM/DD/YYYY';
 
 -- Item types (GFM_COMP.CTYPE)
 c_ct_text        constant varchar2(2) := 'CT';   -- text field
@@ -149,6 +156,22 @@ begin
     return dbms_assert.simple_sql_name(
                upper(c_view_prefix || replace(p_form_code, ' ', '_')) );
 end view_name;
+
+/** Name of the report view of a form: G$_<CODE>_R. */
+function report_view_name (p_form_code in varchar2)
+return varchar2
+is
+begin
+    return dbms_assert.simple_sql_name(view_name(p_form_code) || '_R');
+end report_view_name;
+
+/** Storage format of the dates (GFM_SETUP.DATE_FORMAT, default MM/DD/YYYY). */
+function date_format
+return varchar2
+is
+begin
+    return nvl(get_param('DATE_FORMAT'), c_date_format);
+end date_format;
 
 /** APEX page item name for a column code: P<page>_<CODE>. */
 function item_name (p_ctx in t_ctx, p_code in varchar2)
@@ -667,7 +690,8 @@ begin
          p_id               => wwv_flow_id.next_val
         ,p_flow_id          => p_ctx.app_id
         ,p_flow_step_id     => p_ctx.page_id
-        ,p_branch_action    => 'f?p=&APP_ID.:' || c_return_page || ':&SESSION.::&DEBUG.&success_msg=#SUCCESS_MSG#'
+        ,p_branch_action    => 'f?p=&APP_ID.:' || nvl(p_ctx.form.report_page_id, c_return_page)
+                               || ':&SESSION.::&DEBUG.&success_msg=#SUCCESS_MSG#'
         ,p_branch_point     => 'AFTER_PROCESSING'
         ,p_branch_type      => 'REDIRECT_URL'
         ,p_branch_sequence  => 1
@@ -678,7 +702,8 @@ begin
         ,p_flow_id               => p_ctx.app_id
         ,p_flow_step_id          => p_ctx.page_id
         ,p_branch_name           => 'AfterDelete'
-        ,p_branch_action         => 'f?p=&APP_ID.:' || c_return_page || ':&SESSION.::&DEBUG.:::&success_msg=#SUCCESS_MSG#'
+        ,p_branch_action         => 'f?p=&APP_ID.:' || nvl(p_ctx.form.report_page_id, c_return_page)
+                                    || ':&SESSION.::&DEBUG.:::&success_msg=#SUCCESS_MSG#'
         ,p_branch_point          => 'AFTER_PROCESSING'
         ,p_branch_type           => 'REDIRECT_URL'
         ,p_branch_when_button_id => p_ctx.delete_button_id
@@ -764,7 +789,8 @@ begin
                       i.mandatory,
                       nullif(i.col_span, 0) * 2 as col_span,
                       coalesce(i.icon, c.icon)  as icon,
-                      i.description
+                      i.description,
+                      substr(i.map_col, 1, 1)   as family   -- C, N or D
                  from gfm_items i
                  join gfm_comp  c on c.id = i.comp
                  left join gfm_sections s on s.id = i.section_id
@@ -833,7 +859,8 @@ begin
                 ,p_flow_id                  => p_ctx.app_id
                 ,p_flow_step_id             => p_ctx.page_id
                 ,p_name                     => item_name(p_ctx, r.code)
-                ,p_source_data_type         => 'VARCHAR2'   -- not NUMBER: view columns are VARCHAR2
+                -- NUMBER column, or VARCHAR2 for the items stored as text
+                ,p_source_data_type         => case r.family when 'N' then 'NUMBER' else 'VARCHAR2' end
                 ,p_item_sequence            => r.seq
                 ,p_item_plug_id             => l_region_id
                 ,p_item_source_plug_id      => p_ctx.main_region_id
@@ -866,7 +893,7 @@ begin
                 ,p_flow_id               => p_ctx.app_id
                 ,p_flow_step_id          => p_ctx.page_id
                 ,p_name                  => item_name(p_ctx, r.code)
-                ,p_source_data_type      => 'VARCHAR2'
+                ,p_source_data_type      => case r.family when 'D' then 'DATE' else 'VARCHAR2' end
                 ,p_item_sequence         => r.seq
                 ,p_item_plug_id          => l_region_id
                 ,p_item_source_plug_id   => p_ctx.main_region_id
@@ -875,6 +902,9 @@ begin
                 ,p_source                => r.code
                 ,p_source_type           => 'REGION_SOURCE_COLUMN'
                 ,p_display_as            => 'NATIVE_DATE_PICKER_APEX'
+                -- text storage: fixed format (report view); DATE storage:
+                -- format of the application
+                ,p_format_mask           => case when r.family = 'D' then null else date_format end
                 ,p_item_icon_css_classes => r.icon
                 ,p_cSize                 => 30
                 ,p_colspan               => r.col_span
@@ -1157,6 +1187,7 @@ is
     l_report_id  number;
     l_view_id    number;
     l_process_id number;
+    l_col_count  pls_integer;
     l_columns   t_id_list;
 
     procedure add_column (p_id in number) is
@@ -1241,11 +1272,14 @@ begin
         );
 
         -- Columns of the detail form
-        for s in ( select upper(code) as code, lib, seq
-                     from gfm_items
-                    where form_id = r.detail_form_id
-                      and tcomp   = c_tcomp_column
-                    order by seq ) loop
+        for s in ( select upper(i.code) as code, i.lib, i.seq,
+                          case substr(i.map_col, 1, 1) when 'N' then 'NUMBER'
+                                                       when 'D' then 'DATE'
+                                                       else 'VARCHAR2' end as data_type
+                     from gfm_items i
+                    where i.form_id = r.detail_form_id
+                      and i.tcomp   = c_tcomp_column
+                    order by i.seq ) loop
             add_column(wwv_flow_id.next_val);
             wwv_flow_imp_page.create_region_column(
                  p_id                      => l_columns(l_columns.count)
@@ -1255,21 +1289,26 @@ begin
                 ,p_name                    => s.code
                 ,p_source_type             => 'DB_COLUMN'
                 ,p_source_expression       => s.code
-                ,p_data_type               => 'VARCHAR2'
+                ,p_data_type               => s.data_type
                 ,p_session_state_data_type => 'VARCHAR2'
                 ,p_is_query_only           => false
-                ,p_item_type               => 'NATIVE_TEXT_FIELD'
+                ,p_item_type               => case s.data_type when 'NUMBER' then 'NATIVE_NUMBER_FIELD'
+                                                                when 'DATE'   then 'NATIVE_DATE_PICKER_APEX'
+                                                                else 'NATIVE_TEXT_FIELD' end
                 ,p_heading                 => s.lib
-                ,p_heading_alignment       => 'LEFT'
+                ,p_heading_alignment       => case s.data_type when 'NUMBER' then 'RIGHT' else 'LEFT' end
                 ,p_display_sequence        => s.seq
-                ,p_value_alignment         => 'LEFT'
-                ,p_attributes              => attrs(apex_t_varchar2('trim_spaces', 'BOTH'))
+                ,p_value_alignment         => case s.data_type when 'NUMBER' then 'RIGHT' else 'LEFT' end
+                ,p_attributes              => case s.data_type when 'VARCHAR2'
+                                                   then attrs(apex_t_varchar2('trim_spaces', 'BOTH')) end
                 ,p_is_required             => false
-                ,p_max_length              => 100
+                ,p_max_length              => case s.data_type when 'VARCHAR2' then 100 end
                 ,p_enable_filter           => true
-                ,p_filter_operators        => 'C:S:CASE_INSENSITIVE:REGEXP'
+                -- text operators for text columns; APEX defaults for numbers and dates
+                ,p_filter_operators        => case s.data_type when 'VARCHAR2'
+                                                   then 'C:S:CASE_INSENSITIVE:REGEXP' end
                 ,p_filter_is_required      => false
-                ,p_filter_text_case        => 'MIXED'
+                ,p_filter_text_case        => case s.data_type when 'VARCHAR2' then 'MIXED' end
                 ,p_filter_lov_type         => 'NONE'
                 ,p_use_as_row_header       => false
                 ,p_enable_sort_group       => false
@@ -1342,33 +1381,46 @@ begin
             ,p_show_detail_view          => false
         );
 
-        -- Primary report and its grid view: created explicitly, as in a
-        -- 26.1 export, unless APEX already created them with the grid
+        -- Primary report, its grid view and its columns. Depending on the
+        -- context, create_interactive_grid may already have created some of
+        -- them (unique constraint IG_RPT_NAME_UK): what exists is reused,
+        -- only what is missing is created, as in a 26.1 export.
         set_step('create IG report ' || r.code);
-        begin
-            select view_id
-              into l_view_id
-              from apex_appl_page_ig_rpt_views
-             where application_id = p_ctx.app_id
-               and page_id        = p_ctx.page_id
-               and region_id      = l_region_id
-               and view_type      = 'GRID'
-             fetch first 1 row only;
-        exception
-            when no_data_found then
-                l_report_id := wwv_flow_id.next_val;
-                wwv_flow_imp_page.create_ig_report(
-                     p_id                     => l_report_id
-                    ,p_flow_id                => p_ctx.app_id
-                    ,p_page_id                => p_ctx.page_id
-                    ,p_interactive_grid_id    => l_grid_id
-                    ,p_type                   => 'PRIMARY'
-                    ,p_default_view           => 'GRID'
-                    ,p_show_row_number        => false
-                    ,p_settings_area_expanded => true
-                );
+        select max(report_id)
+          into l_report_id
+          from apex_appl_page_ig_rpts
+         where application_id = p_ctx.app_id
+           and page_id        = p_ctx.page_id
+           and region_id      = l_region_id;
 
-                l_view_id := wwv_flow_id.next_val;
+        if l_report_id is null then
+            l_report_id := wwv_flow_id.next_val;
+            wwv_flow_imp_page.create_ig_report(
+                 p_id                     => l_report_id
+                ,p_flow_id                => p_ctx.app_id
+                ,p_page_id                => p_ctx.page_id
+                ,p_interactive_grid_id    => l_grid_id
+                ,p_type                   => 'PRIMARY'
+                ,p_default_view           => 'GRID'
+                ,p_show_row_number        => false
+                ,p_settings_area_expanded => true
+            );
+        end if;
+
+        set_step('create IG report view ' || r.code);
+        -- the dictionary may return the display value ('Grid'): any view of
+        -- the report is accepted, the grid view first
+        select max(view_id) keep (dense_rank first
+                   order by case when upper(view_type) like 'GRID%' then 0 else 1 end)
+          into l_view_id
+          from apex_appl_page_ig_rpt_views
+         where application_id = p_ctx.app_id
+           and page_id        = p_ctx.page_id
+           and report_id      = l_report_id;
+
+        if l_view_id is null then
+            l_view_id := wwv_flow_id.next_val;
+            begin
                 wwv_flow_imp_page.create_ig_report_view(
                      p_id                       => l_view_id
                     ,p_flow_id                  => p_ctx.app_id
@@ -1380,18 +1432,53 @@ begin
                     ,p_srv_only_display_columns => true
                     ,p_edit_mode                => false
                 );
-        end;
+            exception
+                when others then
+                    -- view already created by APEX but not found above
+                    if sqlerrm not like '%ORA-00001%' then
+                        raise;
+                    end if;
+                    select max(view_id)
+                      into l_view_id
+                      from apex_appl_page_ig_rpt_views
+                     where application_id = p_ctx.app_id
+                       and page_id        = p_ctx.page_id
+                       and region_id      = l_region_id;
+                    if l_view_id is null then
+                        raise_application_error(c_err_metadata,
+                            'Vue du rapport de la grille ' || r.code || ' introuvable dans APEX_APPL_PAGE_IG_RPT_VIEWS');
+                    end if;
+            end;
+        end if;
 
         set_step('create IG report columns ' || r.code);
         for j in 1 .. l_columns.count loop
-            wwv_flow_imp_page.create_ig_report_column(
-                 p_id          => wwv_flow_id.next_val
-                ,p_view_id     => l_view_id
-                ,p_display_seq => j
-                ,p_column_id   => l_columns(j)
-                ,p_is_visible  => true
-                ,p_is_frozen   => false
-            );
+            select count(*)
+              into l_col_count
+              from apex_appl_page_ig_rpt_columns
+             where application_id = p_ctx.app_id
+               and page_id        = p_ctx.page_id
+               and view_id        = l_view_id
+               and column_id      = l_columns(j);
+
+            if l_col_count = 0 then
+                begin
+                    wwv_flow_imp_page.create_ig_report_column(
+                         p_id          => wwv_flow_id.next_val
+                        ,p_view_id     => l_view_id
+                        ,p_display_seq => j
+                        ,p_column_id   => l_columns(j)
+                        ,p_is_visible  => true
+                        ,p_is_frozen   => false
+                    );
+                exception
+                    when others then
+                        -- column already created by APEX with the view
+                        if sqlerrm not like '%ORA-00001%' then
+                            raise;
+                        end if;
+                end;
+            end if;
         end loop;
 
         set_step('create IG process ' || r.code);
@@ -1490,15 +1577,359 @@ exception
 end generate_form;
 
 
+-- ---------------------------------------------------------------------
+-- 3.11 Interactive report page (master forms)
+-- ---------------------------------------------------------------------
+
+/** IR column identifier: 1 -> A, 26 -> Z, 27 -> AA ... */
+function col_ident (p_n in pls_integer)
+return varchar2
+is
+begin
+    if p_n <= 26 then
+        return chr(64 + p_n);
+    end if;
+    return chr(64 + trunc((p_n - 1) / 26)) || chr(65 + mod(p_n - 1, 26));
+end col_ident;
+
+/** Heading of a column of the report view. */
+function report_label (p_form_id in number, p_column in varchar2)
+return varchar2
+is
+    l_label gfm_items.lib%type;
+begin
+    case p_column
+        when 'SEQ_ID'         then return 'N°';
+        when 'GFM$CREATED_ON' then return 'Créé le';
+        when 'GFM$CREATED_BY' then return 'Créé par';
+        when 'GFM$UPDATED_ON' then return 'Modifié le';
+        when 'GFM$UPDATED_BY' then return 'Modifié par';
+        else
+            select max(lib) into l_label
+              from gfm_items
+             where form_id = p_form_id
+               and upper(code) = p_column;
+            return nvl(l_label, initcap(replace(p_column, '_', ' ')));
+    end case;
+end report_label;
+
+function generate_report(fid number, pid number default null, pforce varchar2 default 'N')
+return number
+is
+    l_ctx       t_ctx;
+    l_view      varchar2(128);
+    l_form_page number;
+    l_ir_tpl    number;
+    l_region_id number;
+    l_ws_id     number;
+    l_exists    pls_integer;
+    l_diff      pls_integer;
+    l_n         pls_integer := 0;
+    l_type      varchar2(10);
+    l_label     varchar2(4000);
+    l_visible   apex_t_varchar2 := apex_t_varchar2();
+    -- expected columns of the report: name, heading, type
+    l_exp_names  apex_t_varchar2 := apex_t_varchar2();
+    l_exp_labels apex_t_varchar2 := apex_t_varchar2();
+    l_exp_types  apex_t_varchar2 := apex_t_varchar2();
+    l_expected   apex_t_varchar2 := apex_t_varchar2();   -- name TAB heading TAB type
+begin
+    set_step('report: application');
+    l_ctx.app_id := to_number(get_param('APP_RUN_ID'));
+    if l_ctx.app_id is null then
+        raise_application_error(c_err_param,
+            'Paramètre APP_RUN_ID (application cible) introuvable dans GFM_SETUP');
+    end if;
+
+    set_step('report: load metadata');
+    load_form(l_ctx, fid);
+    load_prefs(l_ctx, fid);
+    l_ctx.page_id := nvl(pid, l_ctx.form.report_page_id);
+    if l_ctx.page_id is null then
+        raise_application_error(c_err_metadata, 'Numéro de page du rapport non défini');
+    end if;
+    l_view      := report_view_name(l_ctx.form.code);
+    l_form_page := l_ctx.form.page_id;
+
+    -- expected columns, from the report view
+    for c in ( select column_name, data_type
+                 from user_tab_columns
+                where table_name = l_view
+                order by column_id ) loop
+        apex_string.push(l_exp_names,  c.column_name);
+        apex_string.push(l_exp_labels, report_label(fid, c.column_name));
+        apex_string.push(l_exp_types,  case c.data_type when 'NUMBER' then 'NUMBER'
+                                                        when 'DATE'   then 'DATE'
+                                                        else 'STRING' end);
+        apex_string.push(l_expected, l_exp_names(l_exp_names.count) || chr(9)
+                                     || l_exp_labels(l_exp_labels.count) || chr(9)
+                                     || l_exp_types(l_exp_types.count));
+    end loop;
+    if l_exp_names.count = 0 then
+        raise_application_error(c_err_metadata, 'Vue ' || l_view || ' introuvable : générez d''abord la vue');
+    end if;
+
+    -- Unchanged columns: the page is kept, with the reports saved by the users
+    set_step('report: compare columns');
+    select count(*) into l_exists
+      from apex_application_pages
+     where application_id = l_ctx.app_id
+       and page_id        = l_ctx.page_id;
+
+    if l_exists > 0 and nvl(upper(pforce), 'N') <> 'Y' then
+        select count(*)
+          into l_diff
+          from ( ( select column_value from table(l_expected)
+                   minus
+                   select column_alias || chr(9) || report_label || chr(9) || column_type
+                     from apex_application_page_ir_col
+                    where application_id = l_ctx.app_id
+                      and page_id        = l_ctx.page_id )
+                 union all
+                 ( select column_alias || chr(9) || report_label || chr(9) || column_type
+                     from apex_application_page_ir_col
+                    where application_id = l_ctx.app_id
+                      and page_id        = l_ctx.page_id
+                   minus
+                   select column_value from table(l_expected) ) );
+        if l_diff = 0 then
+            apex_debug.info('gfm_builder.generate_report: page %s unchanged', l_ctx.page_id);
+            return 1;
+        end if;
+    end if;
+
+    set_step('report: load templates');
+    load_templates(l_ctx);
+    begin
+        l_ir_tpl := get_template_id(l_ctx.app_id, l_ctx.theme_no, 'Region', 'INTERACTIVE_REPORT');
+    exception
+        when others then
+            l_ir_tpl := l_ctx.region_tpl;
+    end;
+
+    set_step('report: remove page');
+    wwv_flow_imp_page.remove_page(p_flow_id => l_ctx.app_id, p_page_id => l_ctx.page_id);
+
+    set_step('report: create page');
+    wwv_flow_imp_page.create_page(
+         p_id                        => l_ctx.page_id
+        ,p_flow_id                   => l_ctx.app_id
+        ,p_user_interface_id         => l_ctx.ui_id
+        ,p_name                      => substr(l_ctx.form.lib || ' - données', 1, 255)
+        ,p_alias                     => 'GFM-' || replace(l_ctx.form.code, '_', '-') || '-DATA'
+        ,p_step_title                => l_ctx.form.lib
+        ,p_step_template             => l_ctx.page_tpl
+        ,p_autocomplete_on_off       => 'OFF'
+        ,p_page_template_options     => '#DEFAULT#'
+        ,p_page_is_public_y_n        => case when l_ctx.form.authent = 'Y' then 'N' else 'Y' end
+        ,p_protection_level          => 'C'
+        ,p_last_updated_by           => nvl(v('APP_USER'), user)
+        ,p_last_upd_yyyymmddhh24miss => to_char(sysdate, 'YYYYMMDDHH24MISS')
+    );
+
+    set_step('report: create region');
+    l_region_id := wwv_flow_id.next_val;
+    wwv_flow_imp_page.create_page_plug(
+         p_id                      => l_region_id
+        ,p_flow_id                 => l_ctx.app_id
+        ,p_page_id                 => l_ctx.page_id
+        ,p_plug_name               => l_ctx.form.lib
+        ,p_region_template_options => '#DEFAULT#:t-IRR-region--hideHeader js-addHiddenHeadingRoleDesc'
+        ,p_plug_template           => l_ir_tpl
+        ,p_plug_display_sequence   => 10
+        ,p_plug_display_point      => 'BODY'
+        ,p_plug_item_display_point => 'ABOVE'
+        ,p_query_type              => 'TABLE'
+        ,p_query_table             => l_view
+        ,p_include_rowid_column    => false
+        ,p_plug_source_type        => 'NATIVE_IR'
+    );
+
+    set_step('report: create worksheet');
+    l_ws_id := wwv_flow_id.next_val;
+    wwv_flow_imp_page.create_worksheet(
+         p_id                     => l_ws_id
+        ,p_flow_id                => l_ctx.app_id
+        ,p_page_id                => l_ctx.page_id
+        ,p_region_id              => l_region_id
+        ,p_max_row_count_message  => 'Le rapport est limité à #MAX_ROW_COUNT# lignes. Ajoutez un filtre.'
+        ,p_no_data_found_message  => 'Aucune donnée.'
+        ,p_pagination_type        => 'ROWS_X_TO_Y'
+        ,p_pagination_display_pos => 'BOTTOM_RIGHT'
+        ,p_report_list_mode       => 'TABS'
+        ,p_lazy_loading           => false
+        ,p_show_detail_link       => 'N'
+        ,p_show_notify            => 'Y'
+        ,p_download_formats       => 'CSV:HTML:XLSX:PDF'
+        ,p_enable_mail_download   => 'Y'
+        ,p_internal_uid           => l_ws_id
+    );
+
+    -- one column per column of the report view, in the view order
+    for i in 1 .. l_exp_names.count loop
+        l_n     := i;
+        l_type  := l_exp_types(i);
+        l_label := l_exp_labels(i);
+        set_step('report: column ' || l_exp_names(i));
+        wwv_flow_imp_page.create_worksheet_column(
+             p_id                   => wwv_flow_id.next_val
+            ,p_flow_id              => l_ctx.app_id
+            ,p_page_id              => l_ctx.page_id
+            ,p_worksheet_id         => l_ws_id
+            ,p_db_column_name       => l_exp_names(i)
+            ,p_display_order        => l_n * 10
+            ,p_column_identifier    => col_ident(l_n)
+            ,p_column_label         => l_label
+            ,p_column_type          => l_type
+            ,p_heading_alignment    => case l_type when 'NUMBER' then 'RIGHT' else 'LEFT' end
+            ,p_column_alignment     => case l_type when 'NUMBER' then 'RIGHT' else 'LEFT' end
+            -- the record number opens the form page
+            ,p_column_link          => case when l_exp_names(i) = 'SEQ_ID' and l_form_page is not null
+                                            then 'f?p=&APP_ID.:' || l_form_page || ':&SESSION.::&DEBUG.:'
+                                                 || l_form_page || ':P' || l_form_page || '_SEQ_ID:#SEQ_ID#' end
+            ,p_column_linktext      => case when l_exp_names(i) = 'SEQ_ID' then '#SEQ_ID#' end
+            ,p_use_as_row_header    => 'N'
+            ,p_available_clientside => 'N'
+        );
+        -- audit columns available but hidden in the default report
+        if l_exp_names(i) not like 'GFM$%' then
+            apex_string.push(l_visible, l_exp_names(i));
+        end if;
+    end loop;
+
+    set_step('report: default report');
+    wwv_flow_imp_page.create_worksheet_rpt(
+         p_id               => wwv_flow_id.next_val
+        ,p_flow_id          => l_ctx.app_id
+        ,p_page_id          => l_ctx.page_id
+        ,p_worksheet_id     => l_ws_id
+        ,p_application_user => 'APXWS_DEFAULT'
+        ,p_report_seq       => 10
+        ,p_report_alias     => 'primary'
+        ,p_status           => 'PUBLIC'
+        ,p_is_default       => 'Y'
+        ,p_report_columns   => apex_string.join(l_visible, ':')
+    );
+
+    if l_form_page is not null then
+        set_step('report: button create');
+        wwv_flow_imp_page.create_page_button(
+             p_id                      => wwv_flow_id.next_val
+            ,p_flow_id                 => l_ctx.app_id
+            ,p_flow_step_id            => l_ctx.page_id
+            ,p_button_sequence         => 10
+            ,p_button_plug_id          => l_region_id
+            ,p_button_name             => 'CREATE'
+            ,p_button_action           => 'REDIRECT_URL'
+            ,p_button_template_options => '#DEFAULT#'
+            ,p_button_template_id      => l_ctx.button_tpl
+            ,p_button_is_hot           => 'Y'
+            ,p_button_image_alt        => 'Nouveau'
+            ,p_button_position         => 'RIGHT_OF_IR_SEARCH_BAR'
+            ,p_button_redirect_url     => 'f?p=&APP_ID.:' || l_form_page || ':&SESSION.::&DEBUG.:'
+                                          || l_form_page || '::'
+        );
+    end if;
+
+    commit;
+    apex_debug.info('gfm_builder.generate_report done, page %s', l_ctx.page_id);
+    return 0;
+
+exception
+    when others then
+        rollback;
+        log_error('generate_report', sqlerrm, dbms_utility.format_error_backtrace);
+        raise_application_error(c_err_generate, substr(g_step || ' - ' || sqlerrm, 1, 2000));
+end generate_report;
+
+
+-- ---------------------------------------------------------------------
+-- 3.12 Removal of the generated objects
+-- ---------------------------------------------------------------------
+
+function remove_generated(fid number)
+return varchar2
+is
+    l_form gfm_form%rowtype;
+    l_app  number := to_number(get_param('APP_RUN_ID'));
+    l_msg  apex_t_varchar2 := apex_t_varchar2();
+
+    procedure remove_page (p_page_id in number, p_table in varchar2) is
+        l_regions pls_integer;
+        l_pages   pls_integer;
+    begin
+        if p_page_id is null or l_app is null then
+            return;
+        end if;
+        select count(*) into l_pages
+          from apex_application_pages
+         where application_id = l_app
+           and page_id        = p_page_id;
+        if l_pages = 0 then
+            return;
+        end if;
+
+        -- only a page generated for this form: a region on its view
+        select count(*) into l_regions
+          from apex_application_page_regions
+         where application_id = l_app
+           and page_id        = p_page_id
+           and upper(table_name) = p_table;
+
+        if l_regions > 0 then
+            set_step('remove page ' || p_page_id);
+            wwv_flow_imp_page.remove_page(p_flow_id => l_app, p_page_id => p_page_id);
+            apex_string.push(l_msg, 'page ' || p_page_id || ' supprimée');
+        else
+            apex_string.push(l_msg, 'page ' || p_page_id
+                                    || ' conservée (elle ne porte pas sur ' || p_table || ')');
+        end if;
+    end remove_page;
+
+    procedure drop_view (p_view in varchar2) is
+    begin
+        set_step('drop view ' || p_view);
+        execute immediate 'drop view ' || p_view;
+        apex_string.push(l_msg, 'vue ' || p_view || ' supprimée');
+    exception
+        when others then
+            if sqlcode <> -942 then        -- view never generated
+                raise;
+            end if;
+    end drop_view;
+begin
+    set_step('read form');
+    select * into l_form from gfm_form where id = fid;
+
+    remove_page(l_form.page_id,        view_name(l_form.code));
+    remove_page(l_form.report_page_id, report_view_name(l_form.code));
+    commit;
+
+    drop_view(report_view_name(l_form.code));
+    drop_view(view_name(l_form.code));
+
+    return apex_string.join(l_msg, ', ');
+exception
+    when others then
+        rollback;
+        log_error('remove_generated', sqlerrm, dbms_utility.format_error_backtrace);
+        raise_application_error(c_err_generate, substr(g_step || ' - ' || sqlerrm, 1, 2000));
+end remove_generated;
+
+
 -- =====================================================================
 -- 4. DDL GENERATION
 -- =====================================================================
 
-/** GFM_DATA slot column for a MAP_ID (1 -> C001), checked against the table. */
-function slot_column (p_slot in number)
+/**
+ * Storage column of an item in GFM_DATA, checked against the table.
+ * MAP_COL (C003, N002, D005...) or, for items mapped before MAP_COL existed,
+ * C + MAP_ID on 3 digits.
+ */
+function item_column (p_map_col in varchar2, p_map_id in number)
 return varchar2
 is
-    l_column varchar2(30) := 'C' || lpad(to_char(p_slot), 3, '0');
+    l_column varchar2(30) := nvl(p_map_col, 'C' || lpad(to_char(p_map_id), 3, '0'));
     l_count  pls_integer;
 begin
     select count(*)
@@ -1508,17 +1939,117 @@ begin
        and column_name = l_column;
 
     if l_count = 0 then
-        raise_application_error(c_err_ddl,
-            'Colonne ' || l_column || ' absente de GFM_DATA (nombre maximal de champs atteint ?)');
+        raise_application_error(c_err_ddl, 'Colonne ' || l_column || ' absente de GFM_DATA');
     end if;
     return l_column;
-end slot_column;
+end item_column;
+
+/** Family of a storage column: C (VARCHAR2), N (NUMBER) or D (DATE). */
+function column_family (p_column in varchar2)
+return varchar2
+is
+begin
+    return substr(p_column, 1, 1);
+end column_family;
+
+/**
+ * First free column of a family (C, N or D) for a form: a column of GFM_DATA
+ * of the right type that no item of the form uses. N001 is reserved for the
+ * link of the detail forms to their master (PARENT_ID).
+ */
+function free_column (p_form_id in number, p_family in varchar2)
+return varchar2
+is
+    l_column varchar2(30);
+begin
+    select min(c.column_name) keep (dense_rank first order by to_number(substr(c.column_name, 2)))
+      into l_column
+      from user_tab_columns c
+     where c.table_name = 'GFM_DATA'
+       and regexp_like(c.column_name, '^' || p_family || '[0-9]{3}$')
+       and c.data_type = case p_family when 'N' then 'NUMBER'
+                                       when 'D' then 'DATE'
+                                       else 'VARCHAR2' end
+       and c.column_name <> 'N001'
+       and not exists ( select 1
+                          from gfm_items i
+                         where i.form_id = p_form_id
+                           and i.map_col = c.column_name );
+    return l_column;
+end free_column;
+
+/**
+ * Report view G$_<CODE>_R: typed and readable columns for the interactive report.
+ *   numbers -> NUMBER ('.' or ',' as decimal separator), dates -> DATE (date_format),
+ *   lists   -> labels (several values 'a:b' -> 'label a, label b'),
+ *   plus the audit columns of GFM_DATA (GFM$CREATED_ON ...).
+ * Values that cannot be converted are shown empty.
+ */
+procedure create_report_view (p_form_id in number, p_form_code in varchar2)
+is
+    l_view  varchar2(128) := report_view_name(p_form_code);
+    l_fmt   varchar2(100) := dbms_assert.enquote_literal(replace(date_format, '''', ''''''));
+    l_cols  apex_t_varchar2 := apex_t_varchar2('SEQ_ID');
+    l_exprs apex_t_varchar2 := apex_t_varchar2('d.seq_id');
+    l_col    varchar2(40);
+    l_expr   varchar2(4000);
+    l_family varchar2(1);
+begin
+    for r in ( select upper(i.code) as code, i.map_id, i.map_col, c.id as comp_id, c.ctype,
+                      c.lib as comp_lib, c.obj_source
+                 from gfm_items i
+                 join gfm_comp  c on c.id = i.comp
+                where i.form_id = p_form_id
+                  and i.tcomp   = c_tcomp_column
+                  and i.map_id is not null
+                order by i.seq, i.id ) loop
+        l_family := column_family(item_column(r.map_col, r.map_id));
+        l_col    := 'd.' || item_column(r.map_col, r.map_id);
+        l_expr   := case
+            -- NUMBER / DATE storage: already typed
+            when l_family in ('N', 'D') then
+                l_col
+            -- older items stored as text: converted
+            when r.ctype = c_ct_number then
+                q'[to_number(replace(trim(]' || l_col || q'[), ',', '.') default null on conversion error, ]'
+                || q'['99999999999999999999D9999999999', 'NLS_NUMERIC_CHARACTERS=''.,''')]'
+            when r.ctype = c_ct_date then
+                'to_date(trim(' || l_col || ') default null on conversion error, ' || l_fmt || ')'
+            when r.ctype = c_ct_list and r.comp_lib = c_inline_list then
+                'replace(' || l_col || q'[, ':', ', ')]'
+            when r.ctype = c_ct_list then
+                q'[nvl((select listagg(l.lib_value, ', ') within group (order by l.seq, l.lib_value)]'
+                || ' from gfm_lov l where l.comp_id = ' || to_char(r.comp_id)
+                || q'[ and instr(':' || ]' || l_col || q'[ || ':', ':' || l.c_value || ':') > 0), ]'
+                || l_col || ')'
+            when r.ctype = c_ct_dyn_list then
+                q'[nvl((select listagg(to_char(s.d), ', ') within group (order by to_char(s.d))]'
+                || ' from ' || dbms_assert.qualified_sql_name(r.obj_source) || ' s'
+                || q'[ where instr(':' || ]' || l_col || q'[ || ':', ':' || to_char(s.r) || ':') > 0), ]'
+                || l_col || ')'
+            else l_col
+        end;
+        apex_string.push(l_cols,  dbms_assert.simple_sql_name(r.code));
+        apex_string.push(l_exprs, l_expr);
+    end loop;
+
+    -- audit columns (GFM_DATA_T1)
+    apex_string.push(l_cols, 'GFM$CREATED_ON');  apex_string.push(l_exprs, 'd.created_on');
+    apex_string.push(l_cols, 'GFM$CREATED_BY');  apex_string.push(l_exprs, 'd.created_by');
+    apex_string.push(l_cols, 'GFM$UPDATED_ON');  apex_string.push(l_exprs, 'd.updated_on');
+    apex_string.push(l_cols, 'GFM$UPDATED_BY');  apex_string.push(l_exprs, 'd.updated_by');
+
+    execute immediate 'create or replace view ' || l_view
+                   || ' (' || apex_string.join(l_cols, ', ') || ')'
+                   || ' as select ' || apex_string.join(l_exprs, ', ')
+                   || ' from gfm_data d where d.form_id = ' || to_char(p_form_id);
+end create_report_view;
 
 procedure generate_ddl (fid number, ptype varchar2 default 'M')
 is
     l_form      gfm_form%rowtype;
     l_view      varchar2(128);
-    l_last_slot number;
+    l_family    varchar2(1);
     l_column    varchar2(30);
     l_sql       varchar2(32767);
     -- view definition: <view_cols> as select <data_cols> from gfm_data
@@ -1532,20 +2063,45 @@ begin
     select * into l_form from gfm_form where id = fid;
     l_view := view_name(l_form.code);
 
-    -- Allocate a slot column to every item that has none yet
-    set_step('allocate slots');
-    l_last_slot := nvl(l_form.map_lastid, 0);
-
-    update gfm_items
-       set map_id = l_last_slot + rownum
+    -- Storage column of every item that has none yet: NUMBER column for a
+    -- number, DATE column for a date, VARCHAR2 column otherwise, or when the
+    -- typed columns are exhausted. A column freed by a deleted item can be
+    -- given again: it is emptied first (the old values were not reachable).
+    set_step('allocate columns');
+    update gfm_items                            -- items mapped before MAP_COL
+       set map_col = 'C' || lpad(to_char(map_id), 3, '0')
      where form_id = fid
-       and map_id is null;
+       and map_col is null
+       and map_id is not null;
 
-    select max(map_id) into l_last_slot from gfm_items where form_id = fid;
+    for r in ( select i.id, upper(i.code) as code, c.ctype
+                 from gfm_items i
+                 join gfm_comp  c on c.id = i.comp
+                where i.form_id = fid
+                  and i.tcomp   = c_tcomp_column
+                  and i.map_col is null
+                order by i.seq, i.id ) loop
+        l_family := case r.ctype when c_ct_number then 'N'
+                                 when c_ct_date   then 'D'
+                                 else 'C' end;
+        l_column := free_column(fid, l_family);
+        if l_column is null and l_family <> 'C' then
+            l_column := free_column(fid, 'C');
+        end if;
+        if l_column is null then
+            raise_application_error(c_err_ddl,
+                'Plus de colonne disponible dans GFM_DATA pour le champ ' || r.code);
+        end if;
 
-    update gfm_form
-       set map_lastid = l_last_slot
-     where id = fid;
+        execute immediate 'update gfm_data set ' || dbms_assert.simple_sql_name(l_column)
+                       || ' = null where form_id = :form_id'
+          using fid;
+
+        update gfm_items
+           set map_col = l_column,
+               map_id  = to_number(substr(l_column, 2))
+         where id = r.id;
+    end loop;
 
     -- Column lists
     set_step('build column lists');
@@ -1554,12 +2110,12 @@ begin
                       to_char(fid),
                       ':new.SEQ_ID' );
 
-    for r in ( select upper(code) as code, map_id
+    for r in ( select upper(code) as code, map_id, map_col
                  from gfm_items
                 where form_id = fid
                   and tcomp   = c_tcomp_column
                 order by map_id ) loop
-        l_column := slot_column(r.map_id);
+        l_column := item_column(r.map_col, r.map_id);
         apex_string.push(l_view_cols, dbms_assert.simple_sql_name(r.code));
         apex_string.push(l_data_cols, l_column);
         apex_string.push(l_ins_cols,  l_column);
@@ -1598,6 +2154,12 @@ begin
           || '    values (' || apex_string.join(l_ins_vals, ', ') || ');' || chr(10)
           || 'end;';
     execute immediate l_sql;
+
+    -- Report view of a master form (interactive report page)
+    if nvl(ptype, 'M') = 'M' then
+        set_step('create report view');
+        create_report_view(fid, l_form.code);
+    end if;
 
     -- APEX UI defaults: labels and help texts
     set_step('UI defaults');
@@ -1696,7 +2258,7 @@ begin
                            and p.page_id        = s.slot )
        and not exists ( select 1
                           from gfm_form f
-                         where f.page_id = s.slot );
+                         where s.slot in (f.page_id, f.report_page_id) );
     return l_slot;
 end getNewPageid;
 
@@ -1869,8 +2431,9 @@ begin
        set map_lastid = null
      where id = l_form_id;
 
-    update gfm_items                                   -- release all the slots
-       set map_id = null
+    update gfm_items                                   -- release all the columns
+       set map_id  = null,
+           map_col = null
      where form_id = l_form_id;
 
     commit;

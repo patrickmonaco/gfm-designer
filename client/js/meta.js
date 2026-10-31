@@ -66,3 +66,22 @@ export function itemProblem(item) {
     }
     return null;
 }
+
+// GFM_FORM.VTYPE
+export const FORM_TYPES = {
+    M: { label: 'Formulaire', icon: 'bi-file-earmark-text', badge: 'text-bg-secondary',
+         help: 'Page de saisie APEX, avec son report interactif' },
+    D: { label: 'Grille', icon: 'bi-table', badge: 'text-bg-info',
+         help: 'Tableau éditable, inclus dans un formulaire' },
+    B: { label: 'Bloc', icon: 'bi-bricks', badge: 'text-bg-warning',
+         help: 'Groupe de champs réutilisable, non généré' },
+};
+export const formType = (vtype) => FORM_TYPES[vtype] || FORM_TYPES.M;
+
+// GFM_FORM.SCOPE
+export const SCOPES = {
+    0: { label: 'Public', icon: 'bi-globe2' },
+    1: { label: 'Groupe', icon: 'bi-people' },
+    2: { label: 'Privé', icon: 'bi-lock' },
+};
+export const scopeOf = (scope) => SCOPES[scope ?? '0'] || SCOPES[0];

@@ -335,7 +335,10 @@ begin
              'notes'           value f.notes,
              'vtype'           value nvl(f.vtype, 'M'),
              'authent'         value nvl(f.authent, 'Y'),
+             'scope'           value nvl(f.scope, '0'),
+             'isPublished'     value nvl(f.is_published, 'N'),
              'pageId'          value f.page_id,
+             'reportPageId'    value f.report_page_id,
              'appId'           value l_app,
              'lastBuild'       value to_char(f.last_updated_on, 'YYYY-MM-DD"T"HH24:MI:SS'),
              'isViewGenerated' value nvl(f.is_view_generated, 'N'),
@@ -373,7 +376,8 @@ begin
                             'compIcon'    value c.icon,
                             'masterId'    value i.master_id,
                             'masterValue' value i.master_value,
-                            'mapId'       value i.map_id
+                            'mapId'       value i.map_id,
+                            'mapCol'      value i.map_col
                             returning clob )
                           order by i.seq, i.id returning clob)
                    from gfm_items i
@@ -457,7 +461,10 @@ begin
                'notes'        value f.notes,
                'vtype'        value nvl(f.vtype, 'M'),
                'authent'      value nvl(f.authent, 'Y'),
+               'scope'        value nvl(f.scope, '0'),
+               'isPublished'  value nvl(f.is_published, 'N'),
                'pageId'       value f.page_id,
+               'reportPageId' value f.report_page_id,
                'lastBuild'    value to_char(f.last_updated_on, 'YYYY-MM-DD"T"HH24:MI:SS'),
                'itemCount'    value ( select count(*) from gfm_items i    where i.form_id = f.id ),
                'sectionCount' value ( select count(*) from gfm_sections s where s.form_id = f.id ),
@@ -483,6 +490,24 @@ exception
         handle_error(sqlcode, sqlerrm, dbms_utility.format_error_backtrace);
 end get_form;
 
+/** Form type: M form (page), D grid (sub-form), B block (not generated). */
+procedure check_form_type (p_vtype in varchar2)
+is
+begin
+    if p_vtype is null or p_vtype not in ('M', 'D', 'B') then
+        fail(c_err_business, 'Type de formulaire attendu : M (formulaire), D (grille) ou B (bloc)');
+    end if;
+end check_form_type;
+
+/** Visibility: 0 public, 1 group, 2 private (enforcement to come). */
+procedure check_scope (p_scope in varchar2)
+is
+begin
+    if p_scope is null or p_scope not in ('0', '1', '2') then
+        fail(c_err_business, 'Portée attendue : 0 (public), 1 (groupe) ou 2 (privé)');
+    end if;
+end check_scope;
+
 procedure create_form (p_body in clob)
 is
     o       json_object_t := parse(p_body);
@@ -491,6 +516,8 @@ is
     l_notes   gfm_form.notes%type;
     l_code    gfm_form.code%type;
     l_authent gfm_form.authent%type;
+    l_scope   gfm_form.scope%type   := nvl(j_str(o, 'scope'), '0');
+    l_publish gfm_form.is_published%type;
     l_page    gfm_form.page_id%type;
     l_id      gfm_form.id%type;
     l_rc      number;
@@ -498,18 +525,19 @@ begin
     if l_lib is null then
         fail(c_err_business, 'Le libellé du formulaire est obligatoire');
     end if;
-    if l_vtype not in ('M', 'D') then
-        fail(c_err_business, 'Type de formulaire attendu : M (maître) ou D (détail)');
-    end if;
+    check_form_type(l_vtype);
+    check_scope(l_scope);
 
     -- private functions cannot be called from SQL: values computed first
     l_notes   := j_str(o, 'notes');
     l_code    := form_code(l_lib);
     l_authent := nvl(j_yn(o, 'authent'), 'Y');
-    l_page    := gfm_builder.getNewPageid(app_id);
+    l_publish := nvl(j_yn(o, 'isPublished'), 'N');
+    -- a page number is reserved only for a form that gets a page
+    l_page    := case when l_vtype = 'M' then gfm_builder.getNewPageid(app_id) end;
 
-    insert into gfm_form (lib, notes, code, vtype, authent, page_id)
-    values (l_lib, l_notes, l_code, l_vtype, l_authent, l_page)
+    insert into gfm_form (lib, notes, code, vtype, authent, scope, is_published, page_id)
+    values (l_lib, l_notes, l_code, l_vtype, l_authent, l_scope, l_publish, l_page)
     returning id into l_id;
 
     l_rc := gfm_builder.init_prefs(l_id);      -- commits
@@ -523,25 +551,42 @@ end create_form;
 
 procedure update_form (p_id in number, p_body in clob)
 is
-    o     json_object_t := parse(p_body);
-    l_row gfm_form%rowtype;
+    o          json_object_t := parse(p_body);
+    l_row      gfm_form%rowtype;
+    l_old_type gfm_form.vtype%type;
+    l_used     pls_integer;
 begin
     select * into l_row from gfm_form where id = p_id for update;
 
     l_row.lib     := nvl(trim(j_str(o, 'lib', l_row.lib)), l_row.lib);
     l_row.notes   := j_str(o, 'notes', l_row.notes);
-    l_row.vtype   := nvl(upper(j_str(o, 'vtype', l_row.vtype)), 'M');
-    l_row.authent := nvl(j_yn(o, 'authent', l_row.authent), 'Y');
+    l_old_type          := nvl(l_row.vtype, 'M');
+    l_row.vtype         := nvl(upper(j_str(o, 'vtype', l_row.vtype)), 'M');
+    l_row.authent       := nvl(j_yn(o, 'authent', l_row.authent), 'Y');
+    l_row.scope         := nvl(j_str(o, 'scope', l_row.scope), '0');
+    l_row.is_published  := nvl(j_yn(o, 'isPublished', l_row.is_published), 'N');
 
-    if l_row.vtype not in ('M', 'D') then
-        fail(c_err_business, 'Type de formulaire attendu : M (maître) ou D (détail)');
+    check_form_type(l_row.vtype);
+    check_scope(l_row.scope);
+
+    -- a grid used by forms must stay a grid
+    if l_old_type = 'D' and l_row.vtype <> 'D' then
+        select count(*) into l_used
+          from gfm_items
+         where tcomp = 'D' and comp = p_id and form_id <> p_id;
+        if l_used > 0 then
+            fail(c_err_conflict, 'Cette grille est utilisée par ' || l_used
+                                 || ' formulaire(s) : son type ne peut pas changer');
+        end if;
     end if;
 
     update gfm_form
-       set lib     = l_row.lib,
-           notes   = l_row.notes,
-           vtype   = l_row.vtype,
-           authent = l_row.authent
+       set lib          = l_row.lib,
+           notes        = l_row.notes,
+           vtype        = l_row.vtype,
+           authent      = l_row.authent,
+           scope        = l_row.scope,
+           is_published = l_row.is_published
      where id = p_id;
 
     commit;
@@ -559,6 +604,8 @@ procedure delete_form (p_id in number, p_force in varchar2 default 'N')
 is
     l_data  pls_integer;
     l_used  pls_integer;
+    l_removed varchar2(4000);
+    l_json    varchar2(4000);
 begin
     check_form(p_id);
 
@@ -580,10 +627,18 @@ begin
                              || ' enregistrement(s) : confirmez pour les supprimer aussi');
     end if;
 
+    -- pages of the host application and views (commits: DDL)
+    set_apex_workspace;
+    l_removed := gfm_builder.remove_generated(p_id);
+
     delete gfm_data where form_id = p_id;
     delete gfm_form where id = p_id;       -- cascade: sections, items, prefs
     commit;
-    emit('{"deleted":' || p_id || '}');
+
+    select json_object('deleted' value p_id, 'message' value l_removed)
+      into l_json
+      from dual;
+    emit(l_json);
 exception
     when others then
         rollback;
@@ -619,12 +674,18 @@ is
     l_page    number;
     l_rc      number;
     l_message varchar2(400);
+    l_rpage   number;
+    l_report_msg varchar2(100);
     l_app     number := app_id;
     l_form_js clob;
     l_json    clob;
     l_empty   varchar2(4000);
 begin
     select * into l_form from gfm_form where id = p_id;
+
+    if l_form.vtype = 'B' then
+        fail(c_err_business, 'Un bloc n''est pas généré : il sert de groupe de champs réutilisable');
+    end if;
 
     -- inline lists without values would produce a broken page
     select listagg('« ' || i.lib || ' »', ', ') within group (order by i.seq)
@@ -647,8 +708,9 @@ begin
     update gfm_form set is_view_generated = 'Y' where id = p_id;
     commit;
 
-    -- 2. APEX page, master forms only (a detail form is displayed as a
-    --    grid inside the pages of its master forms)
+    -- 2. master forms only (a detail form is displayed as a grid inside the
+    --    pages of its master forms): report page, then form page, which
+    --    returns to the report after saving
     if nvl(l_form.vtype, 'M') = 'M' then
         l_page := l_form.page_id;
         if l_page is null then
@@ -657,10 +719,21 @@ begin
             commit;
         end if;
 
-        l_rc := gfm_builder.generate_form(p_id, l_page);   -- commits
+        l_rpage := l_form.report_page_id;
+        if l_rpage is null then
+            l_rpage := gfm_builder.getNewPageid(l_app);
+            update gfm_form set report_page_id = l_rpage where id = p_id;
+            commit;
+        end if;
+        l_rc := gfm_builder.generate_report(p_id, l_rpage);          -- commits
+        l_report_msg := case l_rc when 1 then 'rapport ' || l_rpage || ' inchangé'
+                                          else 'rapport ' || l_rpage || ' régénéré' end;
+
+        l_rc := gfm_builder.generate_form(p_id, l_page);             -- commits
         update gfm_form set is_form_generated = 'Y' where id = p_id;
         commit;
-        l_message := 'Page ' || l_page || ' générée dans l''application ' || l_app;
+        l_message := 'Page ' || l_page || ' générée (' || l_report_msg
+                     || ') dans l''application ' || l_app;
     else
         l_message := 'Vue générée. Régénérez les formulaires maîtres qui utilisent ce sous-formulaire';
     end if;
@@ -669,6 +742,7 @@ begin
     select json_object(
              'appId'   value l_app,
              'pageId'  value l_page,
+             'reportPageId' value l_rpage,
              'message' value l_message,
              'form'    value l_form_js format json
              returning clob )

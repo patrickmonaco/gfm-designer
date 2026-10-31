@@ -34,19 +34,24 @@ procedure list_forms;
 procedure get_form (p_id in number);
 
 /**
- * POST forms - body {lib, notes, vtype: "M"|"D", authent: "Y"|"N"}.
+ * POST forms - body {lib, notes, vtype: "M"|"D"|"B", scope: "0"|"1"|"2",
+ * authent: "Y"|"N", isPublished: "Y"|"N"}.
+ * vtype: M form (APEX page), D grid (sub-form), B block (not generated).
+ * scope: 0 public, 1 group, 2 private. scope, authent and isPublished are
+ * stored only for now: their effect will come later.
  * The code is derived from the label, a free page id is reserved and the
  * default preferences are created.
  */
 procedure create_form (p_body in clob);
 
-/** PUT forms/:id - body: any of {lib, notes, vtype, authent}. */
+/** PUT forms/:id - body: any of {lib, notes, vtype, scope, authent, isPublished}. */
 procedure update_form (p_id in number, p_body in clob);
 
 /**
- * DELETE forms/:id[?force=Y] - deletes the form definition.
+ * DELETE forms/:id[?force=Y] - deletes the form definition, its form and
+ * report pages in the host application and its views (gfm_builder.remove_generated).
  * 409 if data exists in GFM_DATA, unless force=Y (data deleted too).
- * The generated view and APEX page are left in place.
+ * Response: {deleted, message} (message: pages / views removed or kept).
  */
 procedure delete_form (p_id in number, p_force in varchar2 default 'N');
 

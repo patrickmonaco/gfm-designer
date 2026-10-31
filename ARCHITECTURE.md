@@ -82,6 +82,7 @@ Concepteur de formulaires GFM hors d'Oracle APEX : un client web JavaScript/Boot
 | `js/editor.js` | Éditeur : palette, canevas, glisser-déposer, redimensionnement, actions |
 | `js/props.js` | Panneau de propriétés |
 | `js/components.js` | Écran Composants : catalogue, propriétés, valeurs, aperçu |
+| `js/icons.js`, `js/font-apex-icons.js` | Sélecteur d'icônes Font APEX et liste des icônes (catégories, mots-clés) |
 | `js/meta.js` | Libellés et icônes des codes GFM (`CTYPE`, `VTYPE`), largeurs |
 | `js/ui.js` | Échappement HTML, toasts, boîtes de dialogue |
 
@@ -93,12 +94,12 @@ Base : `https://<hôte>/ords/<schéma>/gfm/v1`. Tous les échanges sont en JSON.
 |---|---|---|---|
 | GET | `/info` | — | `{user, appId, version}` |
 | GET | `/forms` | — | `[{id, lib, code, notes, vtype, authent, pageId, lastBuild, itemCount, sectionCount, dataCount}]` |
-| POST | `/forms` | `{lib, notes?, vtype?, authent?}` | 201 `{id, form}` |
+| POST | `/forms` | `{lib, notes?, vtype?, scope?, authent?, isPublished?}` | 201 `{id, form}` |
 | GET | `/forms/:id` | — | formulaire complet (ci-dessous) |
-| PUT | `/forms/:id` | `{lib?, notes?, vtype?, authent?}` | formulaire |
-| DELETE | `/forms/:id[?force=Y]` | — | `{deleted}`. 409 si des données existent sans `force=Y`, ou si le formulaire sert de sous-formulaire |
+| PUT | `/forms/:id` | `{lib?, notes?, vtype?, scope?, authent?, isPublished?}` | formulaire. 409 si une grille utilisée change de type |
+| DELETE | `/forms/:id[?force=Y]` | — | `{deleted, message}`. Supprime aussi les pages de saisie et de rapport (si elles portent bien sur les vues du formulaire) et les vues `G$_<CODE>` et `G$_<CODE>_R`. 409 si des données existent sans `force=Y`, ou si le formulaire sert de sous-formulaire |
 | POST | `/forms/:id/copy` | — | 201 `{id, form}` |
-| POST | `/forms/:id/generate` | — | `{appId, pageId, message, form}` |
+| POST | `/forms/:id/generate` | — | `{appId, pageId, reportPageId, message, form}` |
 | POST | `/forms/:id/reset` | — | formulaire |
 | PUT | `/forms/:id/layout` | `{unsectioned: [itemId], sections: [{id, items: [itemId]}]}` | formulaire |
 | PUT | `/forms/:id/prefs` | `{prefs: {"$ITEM_TEMPLATE": "ABOVE", …}}` (`null` = défaut) | formulaire |
@@ -138,6 +139,36 @@ Base : `https://<hôte>/ords/<schéma>/gfm/v1`. Tous les échanges sont en JSON.
 **Valeurs des listes** : `GFM_LOV.SEQ` (script `06_lov_order.sql`) fixe l'ordre d'affichage. `gfm_builder.get_lov` trie sur `SEQ`, puis sur le libellé. Comme les pages générées appellent `get_lov` à l'affichage, un nouvel ordre s'applique sans régénérer. `save_values` reçoit la liste complète : les valeurs avec `id` sont mises à jour, celles sans `id` sont insérées, et les absentes sont supprimées. Seule la colonne `C_VALUE` est utilisée, comme dans `get_lov`. La valeur enregistrée est obligatoire et unique dans la liste, le libellé reprend la valeur s'il est vide, et une seule valeur peut être celle par défaut.
 
 **Listes dynamiques** : `objSource` doit être une vue ou une table existante qui expose les colonnes `D` et `R`. Elle est vérifiée par `DBMS_ASSERT.SQL_OBJECT_NAME` et par une requête d'essai.
+
+**Types de formulaire** (`GFM_FORM.VTYPE`) :
+- `M` **Formulaire** : une page de saisie APEX et son report interactif ;
+- `D` **Grille** : un tableau éditable inclus dans un formulaire, pour lequel seule la vue est générée ;
+- `B` **Bloc** : un groupe de champs réutilisable. Il se conçoit dans l'éditeur, mais **n'est pas généré** : le bouton « Générer » est masqué et l'API répond 422. Un numéro de page n'est réservé que pour un formulaire de type `M`.
+
+**Portée, authentification, publication** : `GFM_FORM.SCOPE` (`0` public, `1` groupe, `2` privé), `AUTHENT` et `IS_PUBLISHED` se règlent à la création et dans les propriétés du formulaire. Pour l'instant, seule l'authentification agit sur la génération (page publique ou non). La portée et la publication sont enregistrées, et leur effet est à implémenter.
+
+**Colonnes de stockage** : chaque champ est stocké dans une colonne de `GFM_DATA`, enregistrée dans `GFM_ITEMS.MAP_COL` et attribuée par `generate_ddl` à la première génération qui suit sa création :
+- un **nombre** va dans une colonne `NUMBER` (`N002` à `N020`), une **date** dans une colonne `DATE` (`D001` à `D020`), et tout le reste dans une colonne `VARCHAR2` (`C001` à `C050`) ;
+- quand les colonnes typées sont épuisées pour un formulaire, le champ va dans une colonne texte, convertie dans la vue d'affichage ;
+- `N001` est réservée au lien des sous-formulaires vers leur maître (`PARENT_ID`) ;
+- une colonne libérée par un champ supprimé peut être réattribuée : elle est d'abord **vidée** pour ce formulaire, puisque ses anciennes valeurs n'étaient plus accessibles ;
+- les champs créés avant cette version gardent leur colonne texte et leurs données (`MAP_COL` déduite de `MAP_ID` par `08_typed_columns.sql`).
+
+Sur la page générée, l'item et la colonne de grille prennent le type de leur colonne : nombre, ou date au format de l'application. Le panneau de propriétés d'un champ indique sa colonne de stockage.
+
+**Report interactif** : pour un formulaire maître, la génération produit, dans cet ordre :
+1. la vue de saisie `G$_<CODE>` ;
+2. une **vue d'affichage** `G$_<CODE>_R`. Les nombres y sont de type `NUMBER` (virgule ou point décimal) et les dates de type `DATE`, au format de stockage `MM/DD/YYYY`, modifiable par le paramètre `GFM_SETUP.DATE_FORMAT`. Les listes donnent leurs libellés, et les valeurs multiples `a:b` deviennent « libellé a, libellé b ». Les colonnes d'audit `GFM$CREATED_ON/BY` et `GFM$UPDATED_ON/BY` s'ajoutent à la fin. Une valeur non convertible s'affiche vide ;
+3. une **page de report interactif** sur cette vue (`GFM_FORM.REPORT_PAGE_ID`). Le n° de chaque ligne ouvre la fiche, un bouton « Nouveau » crée une fiche, et les colonnes d'audit sont disponibles mais masquées par défaut ;
+4. la page de saisie, qui revient au rapport après enregistrement ou suppression.
+
+La page du rapport **n'est régénérée que si ses colonnes changent** (nom, libellé ou type). Une régénération supprime en effet les rapports enregistrés par les utilisateurs : modifier l'ordre ou la largeur des champs ne les touche pas, mais ajouter, supprimer ou renommer un champ les efface. `gfm_builder.generate_report(fid, pid, 'Y')` force la régénération. L'item date de la page de saisie reçoit le même masque que la vue (`date_format`) : changer `DATE_FORMAT` après coup rendrait illisibles les dates déjà saisies.
+
+**Sous-formulaires (grilles)** : la grille d'un sous-formulaire est filtrée sur `PARENT_ID = :P<page>_SEQ_ID`, et la colonne cachée `PARENT_ID` reçoit par défaut le `SEQ_ID` de la fiche. `create_interactive_grid` crée lui-même le rapport principal et sa vue « grille » : `gfm_builder` les réutilise et n'ajoute que ce qui manque, sans quoi APEX lève `IG_RPT_NAME_UK` ou `IG_RPT_VIEW_UK`.
+
+**Listes inline vides** : une liste inline sans valeur produirait une page APEX en erreur. Le champ est signalé sur le canevas et dans ses propriétés, et la génération est refusée tant qu'une telle liste reste vide. Le refus a lieu dans le client, dans `gfm_api.generate_form` (422 avec la liste des champs) et dans `gfm_builder`.
+
+**Icônes** : le sélecteur propose les icônes Font APEX du Universal Theme, regroupées par catégorie et recherchables par nom ou mot-clé (en anglais). Il sert pour l'icône d'un champ et pour l'icône par défaut d'un composant. Il n'existe pas de liste interrogeable dans la base APEX. La liste vient donc de `docs/icons.js` du dépôt [oracle/font-apex](https://github.com/oracle/font-apex) (licence MIT), figé au commit `24631d9` de mars 2024, et la feuille de style est chargée depuis jsDelivr au même commit. Les icônes ajoutées par des versions d'APEX plus récentes peuvent manquer : le champ accepte toujours une saisie libre. Pour mettre la liste à jour : `node dev/gen-font-apex-icons.cjs <clone>/docs/icons.js client/js/font-apex-icons.js`, puis reporter le commit dans le lien `font-apex.min.css` de `index.html`.
 
 **Codes** : `gfm_api` dérive le code d'un champ de son libellé : majuscules, sans accents, `[A-Z0-9_]`, 26 caractères au plus. Il le rend unique dans le formulaire et évite `SEQ_ID`, `FORM_ID`, `PARENT_ID` et `UPD_ID`. Le trigger `GFM_ITEMS_T1` ajoute toujours `$` aux mots réservés. Le code d'un formulaire est limité à 22 caractères pour laisser la place au suffixe d'une copie.
 
@@ -193,6 +224,14 @@ La maquette sert le client et implémente toute l'API en mémoire, avec le même
 - l'acceptation par ORDS des paramètres PKCE (`code_challenge`), envoyés en plus du secret ;
 - la connexion des utilisateurs APEX au flux *authorization code* ;
 - `apex_util.set_workspace` appelé depuis ORDS.
+
+**Mise à jour 1.4 → 1.5 (bloc, portée, publication)** : `db/update_v1.5.sql`, qui recompile `gfm_api`. Les colonnes existent déjà.
+
+**Mise à jour 1.3 → 1.4 (suppression des pages)** : `db/update_v1.4.sql`, qui recompile `gfm_builder` et `gfm_api`. Aucun changement de table ni d'ORDS.
+
+**Mise à jour 1.2 → 1.3 (colonnes NUMBER et DATE)** : `db/update_v1.3.sql`. Il ajoute `N001` à `N020` et `D001` à `D020` à `GFM_DATA`, ainsi que `GFM_ITEMS.MAP_COL`, puis recompile `gfm_builder` et `gfm_api`. Le module ORDS ne change pas.
+
+**Mise à jour 1.1 → 1.2 (report interactif)** : `db/update_v1.2.sql`. Il ajoute `GFM_FORM.REPORT_PAGE_ID` puis recompile `gfm_builder` et `gfm_api`. Le module ORDS ne change pas.
 
 **Mise à jour 1.0 → 1.1 (écran Composants)** : `db/update_v1.1.sql`. Il ajoute `GFM_LOV.SEQ`, recompile `gfm_builder` et `gfm_api`, recrée le module ORDS, puis relance `04` pour rattacher le privilège au module recréé.
 
